@@ -13,6 +13,7 @@ import { registerRoutingRoutes } from './routes/routing.js';
 import { registerOllamaRoutes } from './routes/ollama.js';
 import { registerCodexRoutes } from './routes/codex.js';
 import { registerProjectRoutes } from './routes/project.js';
+import { registerTelemetryRoutes } from './routes/telemetry.js';
 
 export const HOST = '127.0.0.1';
 export const PORT = 7876;
@@ -63,6 +64,7 @@ export async function createServer(context: AppContext = createContext()): Promi
   await registerOllamaRoutes(app, context);
   await registerCodexRoutes(app, context);
   await registerProjectRoutes(app, context);
+  await registerTelemetryRoutes(app, context);
 
   return { app, context };
 }

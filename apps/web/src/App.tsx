@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { StatusCard } from './components/StatusCard';
-import { RoutingCard, type RoutingState } from './components/RoutingCard';
-import { ProjectCard } from './components/ProjectCard';
+import { Gauge, type GaugeStatus } from './components/Gauge';
+import { RoutingControls, type RoutingState } from './components/RoutingControls';
+import { ProjectControl } from './components/ProjectControl';
+import { SystemPanel } from './components/SystemPanel';
+import { TelemetryPanel, type TelemetryLike } from './components/TelemetryPanel';
 import type { ModelInfo, ProviderInfo, ProjectInfoLike, VsCodeCodexInfo } from './types';
 
 interface CodexStatus {
@@ -12,6 +14,7 @@ interface CodexStatus {
 
 interface OllamaStatus {
   online: boolean;
+  endpoint: string;
   version?: string;
   models: ModelInfo[];
 }
@@ -38,18 +41,33 @@ interface StatusResponse {
   project: ProjectInfoLike | null;
 }
 
+const ROUTE_STATE_LABEL: Record<RoutingState['status'], string> = {
+  applied: 'APPLIED',
+  drift: 'ROUTING DRIFT',
+  not_configured: 'NOT CONFIGURED',
+  error: 'CONFIG ERROR',
+};
+
+const routeGaugeStatus: Record<RoutingState['status'], GaugeStatus> = {
+  applied: 'ok',
+  drift: 'error',
+  not_configured: 'warn',
+  error: 'error',
+};
+
 export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [verify, setVerify] = useState<RoutingVerify | null>(null);
+  const [telemetry, setTelemetry] = useState<TelemetryLike | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStatus = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const response = await fetch('/api/status');
-      if (!response.ok) throw new Error(`Server responded ${response.status}`);
-      const data = (await response.json()) as StatusResponse;
-      setStatus(data);
+      const [statusRes, telemetryRes] = await Promise.all([fetch('/api/status'), fetch('/api/telemetry')]);
+      if (!statusRes.ok) throw new Error(`Server responded ${statusRes.status}`);
+      setStatus((await statusRes.json()) as StatusResponse);
+      if (telemetryRes.ok) setTelemetry((await telemetryRes.json()) as TelemetryLike);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect to server');
@@ -61,18 +79,21 @@ export default function App() {
   const fetchVerify = useCallback(async () => {
     try {
       const response = await fetch('/api/routing/verify');
-      if (response.ok) {
-        setVerify((await response.json()) as RoutingVerify);
-      }
+      if (response.ok) setVerify((await response.json()) as RoutingVerify);
     } catch {
-      // Verification is best-effort; status card still renders.
+      // best-effort
     }
   }, []);
 
   useEffect(() => {
-    void fetchStatus();
+    void fetchAll();
     void fetchVerify();
-  }, [fetchStatus, fetchVerify]);
+    const interval = window.setInterval(() => {
+      void fetchAll();
+      void fetchVerify();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [fetchAll, fetchVerify]);
 
   const handleSetProject = async (projectDir: string): Promise<boolean> => {
     try {
@@ -86,7 +107,7 @@ export default function App() {
         setError(data.error ?? 'Invalid project directory');
         return false;
       }
-      await fetchStatus();
+      await fetchAll();
       return true;
     } catch {
       setError('Failed to set project directory');
@@ -96,110 +117,181 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="container">
-        <Header />
-        <p className="muted">Loading...</p>
+      <div className="cockpit">
+        <TopBar online />
+        <p className="muted boot-line">Initializing instrument cluster…</p>
       </div>
     );
   }
 
   if (error && !status) {
     return (
-      <div className="container">
-        <Header />
-        <p className="error-text">Error: {error}</p>
-        <button className="btn" onClick={() => void fetchStatus()}>
-          Retry Connection
+      <div className="cockpit">
+        <TopBar online={false} />
+        <p className="error-text boot-line">Signal lost: {error}</p>
+        <button className="btn" onClick={() => void fetchAll()}>
+          Reconnect
         </button>
       </div>
     );
   }
 
+  if (!status) return null;
+
+  const { routing, codex, ollama } = status;
+  const desiredLabel = `${routing.desired.provider}${routing.desired.model ? ` / ${routing.desired.model}` : ''}`;
+  const appliedLabel = `${routing.applied.provider ?? 'openai (default)'}${routing.applied.model ? ` / ${routing.applied.model}` : ''}`;
+
   return (
-    <div className="container">
-      <Header />
+    <div className="cockpit">
+      <TopBar online />
 
-      {status && (
-        <>
-          <StatusCard
-            title="Server"
-            value={`${status.server.host}:${status.server.port}`}
-            status="online"
-          />
+      <main className="cluster">
+        {/* ---- Primary cluster: route gauge + provider gauge ---- */}
+        <section className="cluster-main">
+          <div className="gauge-bay">
+            <Gauge
+              label="ACTIVE ROUTE"
+              value={routing.desired.provider === 'openai' ? 'Codex Cloud' : (routing.desired.model ?? 'NO MODEL')}
+              sub={routing.desired.provider === 'openai' ? 'OpenAI' : 'Ollama'}
+              state={ROUTE_STATE_LABEL[routing.status]}
+              status={routeGaugeStatus[routing.status]}
+              fill={routing.status === 'applied' ? 1 : routing.status === 'drift' ? 0.5 : null}
+              size={260}
+            />
+            <Gauge
+              label="RUNTIME"
+              value={ollama.online ? 'ONLINE' : 'OFFLINE'}
+              sub="OLLAMA"
+              state={ollama.online ? `${ollama.models.length} MODELS` : 'NOT DETECTED'}
+              status={ollama.online ? 'ok' : 'neutral'}
+              fill={ollama.online ? 1 : 0}
+              size={220}
+            />
+          </div>
 
-          <StatusCard
-            title="Codex"
-            value={status.codex.installed ? 'Installed' : 'Not Installed'}
-            status={status.codex.installed ? 'installed' : 'not-installed'}
-            details={
-              status.codex.installed
-                ? [status.codex.version, status.codex.path].filter(Boolean).join(' — ') || undefined
-                : 'Install Codex CLI separately (npm install -g @openai/codex)'
-            }
-          />
+          {/* Readout strip */}
+          <div className="readouts">
+            <Readout label="Provider" value={routing.desired.provider === 'openai' ? 'OpenAI' : 'Ollama'} />
+            <Readout label="Model" value={routing.desired.provider === 'openai' ? 'Codex Cloud' : (routing.desired.model ?? '—')} />
+            <Readout label="Route Status" value={ROUTE_STATE_LABEL[routing.status]} status={routeGaugeStatus[routing.status]} />
+            <Readout label="Codex" value={codex.installed ? 'INSTALLED' : 'NOT INSTALLED'} status={codex.installed ? 'ok' : 'error'} detail={codex.version} />
+            <Readout
+              label="VS Code"
+              value={vscodeLabel(verify?.vscodeCodex)}
+              status={vscodeStatusGauge(verify?.vscodeCodex)}
+              detail={verify?.vscodeCodex.detected ? undefined : 'not detected on this machine'}
+            />
+            <Readout label="Project" value={status.project?.name ?? '—'} detail={status.project?.path} />
+          </div>
 
-          <StatusCard
-            title="Ollama"
-            value={status.ollama.online ? 'Online' : 'Offline'}
-            status={status.ollama.online ? 'online' : 'offline'}
-            details={
-              status.ollama.online
-                ? `${status.ollama.models.length} model(s) discovered` +
-                  (status.ollama.version ? ` — version ${status.ollama.version}` : '')
-                : 'Ollama not detected on localhost:11434'
-            }
-          />
+          {/* Drift banner: visible but not disruptive */}
+          {routing.status === 'drift' && (
+            <div className="drift-banner" role="alert">
+              <span className="drift-title">ROUTING DRIFT</span>
+              <span className="drift-detail">
+                HCR Desired: <strong>{desiredLabel}</strong> · Codex Applied: <strong>{appliedLabel}</strong>
+                {routing.detail ? ` — ${routing.detail}` : ''}
+              </span>
+            </div>
+          )}
+          {routing.status === 'error' && (
+            <div className="drift-banner error" role="alert">
+              <span className="drift-title">CONFIG ERROR</span>
+              <span className="drift-detail">{routing.detail ?? 'Codex config could not be parsed.'}</span>
+            </div>
+          )}
 
-          <RoutingCard
-            routing={status.routing}
+          {/* Routing controls */}
+          <RoutingControls
+            routing={routing}
             providers={status.providers}
-            ollamaModels={status.ollama.models}
+            ollamaModels={ollama.models}
             onRefresh={async () => {
-              await fetchStatus();
+              await fetchAll();
               await fetchVerify();
             }}
           />
 
-          <ProjectCard project={status.project} onSetProject={handleSetProject} />
+          <ProjectControl project={status.project} onSetProject={handleSetProject} />
+        </section>
 
-          {verify && <VerifyCard verify={verify} />}
-        </>
-      )}
+        {/* ---- Side rail: system LEDs ---- */}
+        <aside className="cluster-side">
+          <SystemPanel
+            codex={{ installed: codex.installed, version: codex.version, path: codex.path }}
+            ollama={{
+              online: ollama.online,
+              endpoint: ollama.endpoint,
+              modelCount: ollama.models.length,
+              version: ollama.version,
+            }}
+            route={{ status: routing.status, detail: routing.detail }}
+            config={{
+              synced: routing.status === 'applied',
+              detail:
+                routing.status === 'applied'
+                  ? routing.configPath
+                  : `drift vs ${routing.configPath}`,
+            }}
+            vscode={
+              verify?.vscodeCodex ?? { detected: false, confirmed: false, detail: 'verification pending' }
+            }
+          />
+        </aside>
+      </main>
 
-      <div className="footer">
-        <p>Heisenberg Coder Router v0.2.0 — local routing control plane for Codex</p>
-      </div>
+      <TelemetryPanel telemetry={telemetry} />
+
+      <footer className="footer">
+        <p>Heisenberg Coder Router v0.2.0 · {status.server.host}:{status.server.port} · routing control plane for Codex</p>
+      </footer>
     </div>
   );
 }
 
-function VerifyCard({ verify }: { verify: RoutingVerify }) {
-  const { checks, vscodeCodex } = verify;
+function Readout({
+  label,
+  value,
+  status,
+  detail,
+}: {
+  label: string;
+  value: string;
+  status?: GaugeStatus;
+  detail?: string;
+}) {
   return (
-    <div className="card">
-      <div className="card-header">
-        <span className="card-title">Verification</span>
-        <span className={`status-badge ${checks.providerMatches && checks.modelMatches ? 'online' : 'offline'}`}>
-          {checks.providerMatches && checks.modelMatches ? '✓ Uses HCR Route' : '⚠ Route Not Verified'}
-        </span>
-      </div>
-      <p className="muted">
-        Codex CLI: {checks.codexInstalled ? 'installed' : 'not installed'} · config readable:{' '}
-        {checks.configReadable ? 'yes' : 'no'} · valid TOML: {checks.configValidToml ? 'yes' : 'no'}
-      </p>
-      <p className="muted">
-        VS Code Codex: {vscodeCodex.detected ? (vscodeCodex.confirmed ? '✓ Uses HCR Route' : '⚠ Route Not Verified') : 'Not Detected'}
-      </p>
-      <p className="muted small">{vscodeCodex.detail}</p>
+    <div className="readout" title={detail}>
+      <span className="readout-label">{label}</span>
+      <span className={`readout-value ${status ?? ''}`}>{value}</span>
+      {detail && <span className="readout-detail">{detail}</span>}
     </div>
   );
 }
 
-function Header() {
+function vscodeLabel(vscode?: VsCodeCodexInfo): string {
+  if (!vscode) return '…';
+  if (!vscode.detected) return 'NOT DETECTED';
+  if (vscode.confirmed) return 'USES HCR ROUTE';
+  return 'ROUTE NOT VERIFIED';
+}
+
+function vscodeStatusGauge(vscode?: VsCodeCodexInfo): GaugeStatus {
+  if (!vscode) return 'neutral';
+  if (!vscode.detected) return 'neutral';
+  if (vscode.confirmed) return 'ok';
+  return 'warn';
+}
+
+function TopBar({ online }: { online: boolean }) {
   return (
-    <div className="header">
-      <h1>Heisenberg Coder Router</h1>
-      <p>Local routing control plane for Codex — choose provider/model once, use Codex anywhere</p>
-    </div>
+    <header className="topbar">
+      <span className="topbar-title">HEISENBERG CODER ROUTER</span>
+      <span className="topbar-right">
+        HCR <span className={`led ${online ? 'ok' : 'error'}`} aria-hidden="true" />{' '}
+        {online ? 'ONLINE' : 'OFFLINE'}
+      </span>
+    </header>
   );
 }

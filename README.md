@@ -90,16 +90,48 @@ Two providers are supported:
 - **Ollama** — local models running on your machine
 - **OpenAI** — cloud models via the existing Codex/OpenAI login mechanism
 
-## Dashboard
+## Dashboard & Telemetry
 
-The single dashboard shows:
+HCR provides a cockpit-style dashboard for monitoring:
 
-- **Server** — `127.0.0.1:7876`
-- **Codex** — Installed / Not Installed, with version and resolved path
-- **Ollama** — Online / Offline, with discovered model count
-- **Routing** — provider/model selection, **Apply Routing**, route status (Applied / Drift / Not Configured / Error)
-- **Project** — the project directory Codex runs against
-- **Verification** — Codex CLI route check and VS Code Codex route status
+- active provider
+- active model
+- routing status (Applied / Drift / Not Configured / Error)
+- Codex availability
+- Ollama availability
+- routing drift (with a **Reapply HCR Route** action)
+- telemetry where available
+
+"HCR currently acts primarily as a routing control plane. Token usage, latency, throughput, and context utilization are shown only when HCR has a reliable telemetry source. Unknown metrics are displayed as unavailable rather than estimated."
+
+The dashboard exposes telemetry state via:
+
+```
+GET /api/telemetry
+```
+
+Example response while HCR has no inference telemetry source:
+
+```json
+{
+  "source": "unavailable",
+  "provider": "ollama",
+  "model": "qwen3-coder:30b",
+  "inputTokens": null,
+  "outputTokens": null,
+  "totalTokens": null,
+  "contextUsed": null,
+  "contextLimit": null,
+  "requestCount": null,
+  "latencyMs": null,
+  "averageLatencyMs": null,
+  "tokensPerSecond": null,
+  "uptimeSeconds": 42,
+  "observedAt": "2026-09-12T00:00:00.000Z"
+}
+```
+
+Unknown metrics are `null` — never fake zeros. The only observed metric in the current phase is HCR server uptime.
 
 ## External Dependencies
 
@@ -119,6 +151,7 @@ On first startup the application automatically creates `data/router.sqlite` with
 - `GET /api/routing` — desired vs applied route and routing status
 - `POST /api/routing/apply` — apply the desired provider/model route to Codex configuration
 - `GET /api/routing/verify` — verify routing (drift, config validity, VS Code Codex detection)
+- `GET /api/telemetry` — truthful telemetry snapshot (nulls for unobserved metrics)
 - `GET /api/providers` — list providers
 - `GET /api/providers/:provider/models` — models for a provider
 - `POST /api/providers/active` — set active provider (desired state)

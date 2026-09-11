@@ -29,7 +29,19 @@ console.log('TEST SERVER UP');
 let out = '';
 child.stdout.on('data', (d) => (out += d));
 child.stderr.on('data', (d) => (out += d));
-await new Promise((r) => setTimeout(r, 4000));
+
+// Wait for server readiness instead of a fixed sleep (cold start probes CLIs).
+const waitUntilReady = async () => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+      if (res.ok) return;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error('test server did not become ready');
+};
+await waitUntilReady();
 
 const results = [];
 const check = (name, cond, extra = '') => {
@@ -51,9 +63,9 @@ check('GET /api/health', health.status === 200 && health.body.status === 'ok');
 const codex = await j('/api/codex/status');
 check('GET /api/codex/status', codex.status === 200 && codex.body.installed === true, codex.body.version ?? '');
 
-// GET /api/ollama/status (offline -> graceful)
+// GET /api/ollama/status — graceful in either state; endpoint always present
 const ollama = await j('/api/ollama/status');
-check('GET /api/ollama/status (offline graceful)', ollama.status === 200 && ollama.body.online === false);
+check('GET /api/ollama/status (graceful)', ollama.status === 200 && typeof ollama.body.online === 'boolean' && typeof ollama.body.endpoint === 'string', `online=${ollama.body.online}`);
 
 // GET /api/ollama/models (empty ok)
 const models = await j('/api/ollama/models');
@@ -83,7 +95,8 @@ const verify = await j('/api/routing/verify');
 check('GET /api/routing/verify', verify.status === 200 && verify.body.checks?.codexInstalled === true);
 check('verify: applied provider openai', verify.body.applied?.provider === 'openai');
 
-// ollama apply without model -> 400 (provider+model coupling)
+// ollama apply without model -> 400 (provider+model coupling). Desired
+// provider selection legitimately persists even when apply is rejected.
 const applyBad = await j('/api/routing/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'ollama' }) });
 check('apply ollama without model -> 400', applyBad.status === 400, (applyBad.body.error ?? '').slice(0, 60));
 
@@ -104,6 +117,16 @@ check('SPA served by Fastify', spa.status === 200 && spaText.includes('<title>')
 // unknown API -> 404 JSON
 const notFound = await j('/api/nonexistent');
 check('unknown API -> 404 JSON', notFound.status === 404 && notFound.body.error === 'Not found');
+
+// GET /api/telemetry — truthful snapshot: uptime real, inference metrics null
+const telemetry = await j('/api/telemetry');
+check('GET /api/telemetry', telemetry.status === 200 && telemetry.body.source === 'unavailable');
+check('telemetry: uptimeSeconds is a real number', typeof telemetry.body.uptimeSeconds === 'number' && telemetry.body.uptimeSeconds >= 0);
+check('telemetry: inference metrics null (not zero)',
+  telemetry.body.inputTokens === null && telemetry.body.totalTokens === null && telemetry.body.requestCount === null);
+const routingNow = await j('/api/routing');
+check('telemetry: provider matches routing desired', telemetry.body.provider === routingNow.body.desired.provider, `telemetry=${telemetry.body.provider} desired=${routingNow.body.desired.provider}`);
+check('telemetry: observedAt present', typeof telemetry.body.observedAt === 'string');
 
 // old launcher endpoints must be gone
 const goneStart = await j('/api/codex/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });

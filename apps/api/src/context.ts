@@ -1,4 +1,4 @@
-import { DatabaseEngine, OllamaEngine, CodexEngine, ProviderEngine, ProjectEngine, ModelEngine, CodexConfigEngine, RoutingEngine } from '@heisenberg/core';
+import { DatabaseEngine, OllamaEngine, CodexEngine, ProviderEngine, ProjectEngine, ModelEngine, CodexConfigEngine, RoutingEngine, TelemetryEngine } from '@heisenberg/core';
 import type { RouteProvider } from '@heisenberg/contracts';
 
 export interface AppContext {
@@ -9,6 +9,7 @@ export interface AppContext {
   projects: ProjectEngine;
   models: ModelEngine;
   routing: RoutingEngine;
+  telemetry: TelemetryEngine;
 }
 
 export function createContext(): AppContext {
@@ -24,8 +25,12 @@ export function createContext(): AppContext {
     () => ollama.getStatus(),
     () => codex.getStatus()
   );
+  const telemetry = new TelemetryEngine(() => ({
+    provider: routing.getDesired().provider,
+    model: routing.getDesired().model,
+  }));
 
-  return { db, ollama, codex, providers, projects, models, routing };
+  return { db, ollama, codex, providers, projects, models, routing, telemetry };
 }
 
 const KEY_PROVIDER = 'active_provider';

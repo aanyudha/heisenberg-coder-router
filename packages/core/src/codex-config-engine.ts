@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
 import { AppError, getCodexConfigPath } from '@heisenberg/shared';
 import { getOllamaBaseUrl } from '@heisenberg/providers';
 
@@ -165,8 +166,10 @@ export class CodexConfigEngine {
       updated = this.removeOllamaTable(updated);
     }
 
-    const changed = updated !== original;
+    const changed = updated !== original || !exists;
     if (changed) {
+      // CODEX_HOME may not exist yet (fresh machine); create it on first write.
+      mkdirSync(dirname(this.configPath), { recursive: true });
       writeFileSync(this.configPath, updated, 'utf-8');
     }
     return { backupCreated, changed };

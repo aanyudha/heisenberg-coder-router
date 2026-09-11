@@ -7,3 +7,4 @@ export { DatabaseEngine } from './database-engine.js';
 export { CodexConfigEngine } from './codex-config-engine.js';
 export { RoutingEngine, ollamaEndpoint } from './routing-engine.js';
 export { detectVsCodeCodex } from './vscode-detection.js';
+export { TelemetryEngine } from './telemetry-engine.js';

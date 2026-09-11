@@ -73,18 +73,19 @@ export async function getOllamaStatus(): Promise<OllamaStatus> {
     });
 
     if (!response.ok) {
-      return { online: false, models: [] };
+      return { online: false, endpoint: getOllamaBaseUrl(), models: [] };
     }
 
     const data = (await response.json()) as { version?: string };
     const models = await getOllamaModels();
     return {
       online: true,
+      endpoint: getOllamaBaseUrl(),
       version: data.version,
       models,
     };
   } catch {
-    return { online: false, models: [] };
+    return { online: false, endpoint: getOllamaBaseUrl(), models: [] };
   }
 }
 

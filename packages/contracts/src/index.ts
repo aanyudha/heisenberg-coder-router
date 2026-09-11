@@ -28,6 +28,7 @@ export interface CodexStatus {
 // Ollama types
 export interface OllamaStatus {
   online: boolean;
+  endpoint: string; // base URL honoring OLLAMA_HOST
   version?: string;
   models: Model[]; // live from local Ollama API; never hardcoded
 }
@@ -110,4 +111,38 @@ export interface RoutingVerify {
 export interface ApplyRouteResponse {
   ok: boolean;
   routing: RoutingStatus;
+}
+
+// ---- Telemetry (truthful observability) ----
+
+/** Where telemetry values came from. 'unavailable' = HCR cannot observe. */
+export type TelemetrySource = 'hcr' | 'ollama' | 'codex' | 'provider' | 'unavailable';
+
+export interface TelemetrySnapshot {
+  source: TelemetrySource;
+
+  /** Provider/model of the current desired route (context for the metrics). */
+  provider: RouteProvider | null;
+  model: string | null;
+
+  // Inference metrics — null when HCR has no reliable source (it is not in
+  // the inference data path). Unknown is NOT the same as zero.
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+
+  contextUsed?: number | null;
+  contextLimit?: number | null;
+
+  requestCount?: number | null;
+
+  latencyMs?: number | null;
+  averageLatencyMs?: number | null;
+
+  tokensPerSecond?: number | null;
+
+  /** Real metric: HCR server process uptime in seconds. */
+  uptimeSeconds?: number | null;
+
+  observedAt?: string;
 }
