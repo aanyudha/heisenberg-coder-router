@@ -208,7 +208,7 @@ export default function App() {
       )}
 
       <div className="footer">
-        <p>Heisenberg Codex Router v0.1.0</p>
+        <p>Heisenberg Coder Router v0.1.0</p>
       </div>
     </div>
   );
@@ -217,7 +217,7 @@ export default function App() {
 function Header() {
   return (
     <div className="header">
-      <h1>Heisenberg Codex Router</h1>
+      <h1>Heisenberg Coder Router</h1>
       <p>Local Codex Provider/Model Router</p>
     </div>
   );

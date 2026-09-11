@@ -1,4 +1,4 @@
-# Heisenberg Codex Router
+# Heisenberg Coder Router
 
 Local-only Codex provider/model router for development.
 
@@ -19,7 +19,7 @@ npm start
 After starting, the console shows:
 
 ```
-Heisenberg Codex Router
+Heisenberg Coder Router
 Running at:
 
 http://localhost:7876
@@ -31,12 +31,12 @@ Open your browser and navigate to `http://localhost:7876` to access the dashboar
 
 - **Default server:** `127.0.0.1:7876`
 - The server is localhost-only by default — it does not listen on `0.0.0.0` and is not reachable from your LAN.
-- There is no Heisenberg Codex Router login. No application authentication exists; the only authentication involved is the existing Codex/OpenAI login used by the Codex CLI itself.
+- There is no Heisenberg Coder Router login. No application authentication exists; the only authentication involved is the existing Codex/OpenAI login used by the Codex CLI itself.
 - A single runtime process serves both the API and the built React dashboard (`npm start`). You do not need to run the Vite frontend separately.
 
 ## Ollama
 
-- If Ollama is already installed and running, Heisenberg Codex Router automatically detects it at startup via the standard local Ollama API (`127.0.0.1:11434`).
+- If Ollama is already installed and running, Heisenberg Coder Router automatically detects it at startup via the standard local Ollama API (`127.0.0.1:11434`).
 - Installed Ollama models are automatically discovered and displayed in the model selector.
 - The user does not need to manually register Ollama models — model names are never hardcoded; they are read live from your local Ollama instance.
 - If Ollama is not running, it is shown as **Offline** and the application keeps working.
@@ -55,7 +55,7 @@ Two providers are supported:
 - **Ollama** — local models running on your machine
 - **OpenAI** — cloud models via the existing Codex/OpenAI login mechanism
 
-To use OpenAI cloud, switch the provider to **OpenAI** in the dashboard and use the existing Codex/OpenAI login mechanism (`codex login`). Heisenberg Codex Router does not implement its own authentication.
+To use OpenAI cloud, switch the provider to **OpenAI** in the dashboard and use the existing Codex/OpenAI login mechanism (`codex login`). Heisenberg Coder Router does not implement its own authentication.
 
 ## Dashboard
 

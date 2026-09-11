@@ -27,7 +27,7 @@ async function main() {
   }
 
   console.log('');
-  console.log('Heisenberg Codex Router');
+  console.log('Heisenberg Coder Router');
   console.log('Running at:');
   console.log('');
   console.log(`http://localhost:${PORT}`);
