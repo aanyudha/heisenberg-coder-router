@@ -7,7 +7,7 @@ import { AppError, formatDate, isCommandAvailable, isWindows } from '@heisenberg
  * Codex Process Engine - Starts and stops the Codex CLI as a child process
  * bound to a project directory, provider, and model.
  *
- * - Ollama: `codex --oss -m <model>` (Codex talks to the local Ollama API)
+ * - Ollama: `codex --oss --local-provider ollama -m <model>` (provider explicitly bound to local Ollama)
  * - OpenAI: `codex` (Codex uses its existing OpenAI login/configuration)
  */
 export class CodexProcessEngine {
@@ -64,12 +64,15 @@ export class CodexProcessEngine {
     const args: string[] = [];
     if (options.provider === 'ollama') {
       if (!options.model) {
-        throw new Error('A model must be selected when using the Ollama provider.');
+        throw new AppError('A model must be selected when using the Ollama provider.', 400);
       }
-      // `--oss` points Codex at the local Ollama endpoint (localhost:11434).
-      args.push('--oss', '-m', options.model);
+      // `--oss` + `--local-provider ollama` explicitly bind Codex to the local
+      // Ollama provider (localhost:11434) so provider/model routing is
+      // deterministic and no OpenAI cloud fallback is used.
+      args.push('--oss', '--local-provider', 'ollama', '-m', options.model);
     }
     // OpenAI: no extra flags — Codex uses its existing login/configuration.
+    // No Ollama/local-provider flags may leak into an OpenAI launch.
 
     const command = ['codex', ...args].join(' ');
     this.command = command;

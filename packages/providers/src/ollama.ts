@@ -1,4 +1,4 @@
-import type { OllamaStatus, Model, Provider } from '@heisenberg/contracts';
+import type { OllamaStatus, Model } from '@heisenberg/contracts';
 
 const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434';
 
@@ -86,17 +86,6 @@ export async function getOllamaStatus(): Promise<OllamaStatus> {
   } catch {
     return { online: false, models: [] };
   }
-}
-
-/**
- * Get Ollama provider info (status filled in by the engine layer).
- */
-export function getOllamaProvider(): Provider {
-  return {
-    type: 'ollama',
-    name: 'Ollama',
-    status: 'unknown',
-  };
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { Provider, Model, ProviderType } from '@heisenberg/contracts';
+import type { Model, ProviderType } from '@heisenberg/contracts';
 import { isCommandAvailable, safeExec, AppError } from '@heisenberg/shared';
 
 const VALID_PROVIDERS: ProviderType[] = ['ollama', 'openai'];
@@ -15,18 +15,6 @@ export function assertValidProvider(value: string): ProviderType {
 }
 
 /**
- * Check if OpenAI/Codex cloud is available via the Codex CLI.
- * Authentication is handled by the existing Codex/OpenAI login mechanism —
- * this project never implements its own auth.
- */
-export function getOpenAIStatus(): { available: boolean; version?: string } {
-  // Synchronous wrapper is acceptable here: Codex availability is only probed
-  // once at engine init, and `where`/`command -v` are fast.
-  // The engines call this through initialize() which is async.
-  return { available: false };
-}
-
-/**
  * Async check used by the engine layer.
  */
 export async function checkOpenAIAvailability(): Promise<{ available: boolean; version?: string }> {
@@ -36,17 +24,6 @@ export async function checkOpenAIAvailability(): Promise<{ available: boolean; v
   }
   const version = await safeExec('codex --version');
   return { available: true, version: version ?? undefined };
-}
-
-/**
- * Get OpenAI provider info (status filled in by the engine layer).
- */
-export function getOpenAIProvider(): Provider {
-  return {
-    type: 'openai',
-    name: 'OpenAI',
-    status: 'unknown',
-  };
 }
 
 /**

@@ -1,6 +1,5 @@
-export { getOllamaStatus, getOllamaModels, getOllamaProvider, getOllamaBaseUrl } from './ollama.js';
+export { getOllamaStatus, getOllamaModels, getOllamaBaseUrl } from './ollama.js';
 export {
-  getOpenAIProvider,
   getOpenAIModels,
   checkOpenAIAvailability,
   isValidProvider,

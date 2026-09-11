@@ -44,8 +44,8 @@ Open your browser and navigate to `http://localhost:7876` to access the dashboar
 ## Codex CLI
 
 - The router detects whether Codex CLI is installed and available in PATH and shows its status in the dashboard (**Installed / Not Installed**).
-- Starting Codex from the dashboard runs the Codex CLI in the selected project directory:
-  - **Ollama provider:** `codex --oss -m <model>` (Codex connects to your local Ollama)
+- Starting Codex from the dashboard runs the Codex CLI in the selected project directory. Switching providers requires stopping the current Codex process and starting a new one with the new provider configuration (no mid-session provider switching).
+  - **Ollama provider:** `codex --oss --local-provider ollama -m <model>` (provider explicitly bound to your local Ollama)
   - **OpenAI provider:** `codex` (Codex uses its existing OpenAI login/configuration)
 
 ## Providers

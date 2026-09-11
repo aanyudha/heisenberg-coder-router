@@ -66,10 +66,20 @@ export async function registerProviderRoutes(app: FastifyInstance, context: AppC
     // Provider: from body or fall back to the active provider.
     const provider = body.provider ? assertValidProvider(body.provider) : providers.getActiveProvider();
 
-    // Model: required for Ollama.
+    // Model: required for Ollama. Provider and model are resolved together so
+    // the launch is one routing decision with no cross-provider leakage.
     let model = body.model ?? providers.getActiveModel();
     if (provider === 'ollama' && !model) {
       throw new AppError('A model must be selected for the Ollama provider', 400);
+    }
+    if (model && provider === 'ollama') {
+      const known = await providers.getModels('ollama');
+      if (!known.some((m) => m.id === model)) {
+        throw new AppError(
+          `Model "${model}" is not available for the Ollama provider. Refresh Ollama models first.`,
+          400
+        );
+      }
     }
     if (model) {
       providers.setModel(model);
