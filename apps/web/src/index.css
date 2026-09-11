@@ -225,3 +225,23 @@ select option {
   font-size: 13px;
   margin: 8px 0;
 }
+
+.route-status {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+.route-pair {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+
+.route-pair > div {
+  flex: 1;
+}
+
+.small {
+  font-size: 11px;
+}

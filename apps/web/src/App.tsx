@@ -1,21 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StatusCard } from './components/StatusCard';
-import { ProviderCard } from './components/ProviderCard';
+import { RoutingCard, type RoutingState } from './components/RoutingCard';
 import { ProjectCard } from './components/ProjectCard';
-import { RunCard } from './components/RunCard';
+import type { ModelInfo, ProviderInfo, ProjectInfoLike, VsCodeCodexInfo } from './types';
 
 interface CodexStatus {
   installed: boolean;
   path?: string;
   version?: string;
-}
-
-export interface ModelInfo {
-  id: string;
-  name: string;
-  provider: 'ollama' | 'openai';
-  size?: string;
-  modified?: string;
 }
 
 interface OllamaStatus {
@@ -24,28 +16,17 @@ interface OllamaStatus {
   models: ModelInfo[];
 }
 
-export interface ProviderInfo {
-  type: 'ollama' | 'openai';
-  name: string;
-  status: 'online' | 'offline' | 'unknown';
-}
-
-interface ProjectInfo {
-  name: string;
-  path: string;
-}
-
-export interface RunStatus {
-  state: 'idle' | 'starting' | 'running' | 'stopped' | 'exited';
-  pid?: number;
-  command?: string;
-  provider?: 'ollama' | 'openai';
-  model?: string;
-  projectDir?: string;
-  startedAt?: string;
-  exitedAt?: string;
-  exitCode?: number | null;
-  error?: string;
+interface RoutingVerify {
+  status: RoutingState['status'];
+  checks: {
+    codexInstalled: boolean;
+    configReadable: boolean;
+    configValidToml: boolean;
+    providerMatches: boolean;
+    modelMatches: boolean;
+  };
+  vscodeCodex: VsCodeCodexInfo;
+  configPath: string;
 }
 
 interface StatusResponse {
@@ -53,17 +34,15 @@ interface StatusResponse {
   codex: CodexStatus;
   ollama: OllamaStatus;
   providers: ProviderInfo[];
-  activeProvider: 'ollama' | 'openai';
-  activeModel: string | null;
-  project: ProjectInfo | null;
-  run: RunStatus;
+  routing: RoutingState;
+  project: ProjectInfoLike | null;
 }
 
 export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [verify, setVerify] = useState<RoutingVerify | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -79,43 +58,23 @@ export default function App() {
     }
   }, []);
 
+  const fetchVerify = useCallback(async () => {
+    try {
+      const response = await fetch('/api/routing/verify');
+      if (response.ok) {
+        setVerify((await response.json()) as RoutingVerify);
+      }
+    } catch {
+      // Verification is best-effort; status card still renders.
+    }
+  }, []);
+
   useEffect(() => {
     void fetchStatus();
-  }, [fetchStatus]);
-
-  const handleStart = async () => {
-    setActionMessage(null);
-    try {
-      const response = await fetch('/api/codex/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = (await response.json()) as { run?: RunStatus; error?: string };
-      if (!response.ok) {
-        setActionMessage(data.error ?? 'Failed to start Codex');
-      } else {
-        setActionMessage('Codex started.');
-      }
-      await fetchStatus();
-    } catch {
-      setActionMessage('Failed to start Codex');
-    }
-  };
-
-  const handleStop = async () => {
-    setActionMessage(null);
-    try {
-      await fetch('/api/codex/stop', { method: 'POST' });
-      setActionMessage('Codex stopped.');
-      await fetchStatus();
-    } catch {
-      setActionMessage('Failed to stop Codex');
-    }
-  };
+    void fetchVerify();
+  }, [fetchStatus, fetchVerify]);
 
   const handleSetProject = async (projectDir: string): Promise<boolean> => {
-    setActionMessage(null);
     try {
       const response = await fetch('/api/project', {
         method: 'POST',
@@ -124,13 +83,13 @@ export default function App() {
       });
       if (!response.ok) {
         const data = (await response.json()) as { error?: string };
-        setActionMessage(data.error ?? 'Invalid project directory');
+        setError(data.error ?? 'Invalid project directory');
         return false;
       }
       await fetchStatus();
       return true;
     } catch {
-      setActionMessage('Failed to set project directory');
+      setError('Failed to set project directory');
       return false;
     }
   };
@@ -191,25 +150,47 @@ export default function App() {
             }
           />
 
-          <ProviderCard
+          <RoutingCard
+            routing={status.routing}
             providers={status.providers}
-            activeProvider={status.activeProvider}
-            activeModel={status.activeModel}
             ollamaModels={status.ollama.models}
-            onRefresh={fetchStatus}
+            onRefresh={async () => {
+              await fetchStatus();
+              await fetchVerify();
+            }}
           />
 
           <ProjectCard project={status.project} onSetProject={handleSetProject} />
 
-          <RunCard run={status.run} onStart={handleStart} onStop={handleStop} />
-
-          {actionMessage && <p className={error ? 'error-text' : 'muted'}>{actionMessage}</p>}
+          {verify && <VerifyCard verify={verify} />}
         </>
       )}
 
       <div className="footer">
-        <p>Heisenberg Coder Router v0.1.0</p>
+        <p>Heisenberg Coder Router v0.2.0 — local routing control plane for Codex</p>
       </div>
+    </div>
+  );
+}
+
+function VerifyCard({ verify }: { verify: RoutingVerify }) {
+  const { checks, vscodeCodex } = verify;
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-title">Verification</span>
+        <span className={`status-badge ${checks.providerMatches && checks.modelMatches ? 'online' : 'offline'}`}>
+          {checks.providerMatches && checks.modelMatches ? '✓ Uses HCR Route' : '⚠ Route Not Verified'}
+        </span>
+      </div>
+      <p className="muted">
+        Codex CLI: {checks.codexInstalled ? 'installed' : 'not installed'} · config readable:{' '}
+        {checks.configReadable ? 'yes' : 'no'} · valid TOML: {checks.configValidToml ? 'yes' : 'no'}
+      </p>
+      <p className="muted">
+        VS Code Codex: {vscodeCodex.detected ? (vscodeCodex.confirmed ? '✓ Uses HCR Route' : '⚠ Route Not Verified') : 'Not Detected'}
+      </p>
+      <p className="muted small">{vscodeCodex.detail}</p>
     </div>
   );
 }
@@ -218,7 +199,7 @@ function Header() {
   return (
     <div className="header">
       <h1>Heisenberg Coder Router</h1>
-      <p>Local Codex Provider/Model Router</p>
+      <p>Local routing control plane for Codex — choose provider/model once, use Codex anywhere</p>
     </div>
   );
 }

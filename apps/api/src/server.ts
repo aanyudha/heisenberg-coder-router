@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import fastifyStatic from '@fastify/static';import { existsSync } from 'fs';
+import fastifyStatic from '@fastify/static';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import type { AppContext } from './context.js';
 import { createContext } from './context.js';
@@ -8,6 +9,7 @@ import { AppError } from '@heisenberg/shared';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerStatusRoutes } from './routes/status.js';
 import { registerProviderRoutes } from './routes/providers.js';
+import { registerRoutingRoutes } from './routes/routing.js';
 import { registerOllamaRoutes } from './routes/ollama.js';
 import { registerCodexRoutes } from './routes/codex.js';
 import { registerProjectRoutes } from './routes/project.js';
@@ -57,6 +59,7 @@ export async function createServer(context: AppContext = createContext()): Promi
   registerHealthRoutes(app);
   await registerStatusRoutes(app, context);
   await registerProviderRoutes(app, context);
+  await registerRoutingRoutes(app, context);
   await registerOllamaRoutes(app, context);
   await registerCodexRoutes(app, context);
   await registerProjectRoutes(app, context);

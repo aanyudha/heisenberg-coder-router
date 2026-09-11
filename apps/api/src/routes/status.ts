@@ -2,15 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import type { StatusResponse } from '@heisenberg/contracts';
 import type { AppContext } from '../context.js';
 
-export async function registerStatusRoutes(
-  app: FastifyInstance,
-  { ollama, codex, codexProcess, providers, projects }: AppContext
-) {
+export async function registerStatusRoutes(app: FastifyInstance, context: AppContext): Promise<void> {
+  const { ollama, codex, providers, projects, routing } = context;
+
   app.get('/api/status', async (): Promise<StatusResponse> => {
-    const [ollamaStatus, codexStatus, providerList] = await Promise.all([
+    const [ollamaStatus, codexStatus, providerList, routingStatus] = await Promise.all([
       ollama.getStatus(),
       codex.getStatus(),
       providers.getProviders(),
+      Promise.resolve(routing.status()),
     ]);
 
     return {
@@ -18,10 +18,8 @@ export async function registerStatusRoutes(
       codex: codexStatus,
       ollama: ollamaStatus,
       providers: providerList,
-      activeProvider: providers.getActiveProvider(),
-      activeModel: providers.getActiveModel(),
+      routing: routingStatus,
       project: projects.getProject(),
-      run: codexProcess.getStatus(),
     };
   });
 }

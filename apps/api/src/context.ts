@@ -1,66 +1,59 @@
-import { DatabaseEngine } from '@heisenberg/core';
-import { OllamaEngine } from '@heisenberg/core';
-import { CodexEngine } from '@heisenberg/core';
-import { CodexProcessEngine } from '@heisenberg/core';
-import { ProviderEngine } from '@heisenberg/core';
-import { ProjectEngine } from '@heisenberg/core';
-import { SessionEngine } from '@heisenberg/core';
-import { ModelEngine } from '@heisenberg/core';
+import { DatabaseEngine, OllamaEngine, CodexEngine, ProviderEngine, ProjectEngine, ModelEngine, CodexConfigEngine, RoutingEngine } from '@heisenberg/core';
+import type { RouteProvider } from '@heisenberg/contracts';
 
 export interface AppContext {
   db: DatabaseEngine;
   ollama: OllamaEngine;
   codex: CodexEngine;
-  codexProcess: CodexProcessEngine;
   providers: ProviderEngine;
   projects: ProjectEngine;
-  sessions: SessionEngine;
   models: ModelEngine;
+  routing: RoutingEngine;
 }
 
 export function createContext(): AppContext {
   const db = new DatabaseEngine();
   const ollama = new OllamaEngine();
   const codex = new CodexEngine();
-  const codexProcess = new CodexProcessEngine();
   const providers = new ProviderEngine(ollama, codex);
   const projects = new ProjectEngine();
-  const sessions = new SessionEngine(db);
   const models = new ModelEngine(providers);
+  const codexConfig = new CodexConfigEngine();
+  const routing = new RoutingEngine(
+    codexConfig,
+    () => ollama.getStatus(),
+    () => codex.getStatus()
+  );
 
-  return { db, ollama, codex, codexProcess, providers, projects, sessions, models };
+  return { db, ollama, codex, providers, projects, models, routing };
 }
 
 const KEY_PROVIDER = 'active_provider';
 const KEY_MODEL = 'active_model';
 const KEY_PROJECT = 'project_dir';
 
+/** Restore HCR desired route (provider/model/project) persisted in SQLite. */
 export function loadSettings(ctx: AppContext): void {
   const provider = ctx.db.getSetting(KEY_PROVIDER);
   if (provider === 'ollama' || provider === 'openai') {
-    ctx.providers.setProvider(provider);
+    ctx.routing.setDesired({ provider });
   }
   const model = ctx.db.getSetting(KEY_MODEL);
   if (model) {
-    ctx.providers.setModel(model);
+    ctx.routing.setDesired({ model });
   }
   const projectDir = ctx.db.getSetting(KEY_PROJECT);
   if (projectDir) {
-    // Fire and forget: restored project is validated again on start.
+    // Fire and forget: restored project is re-validated on apply.
     void ctx.projects.setProject(projectDir).catch(() => {
       ctx.db.setSetting(KEY_PROJECT, '');
     });
+    ctx.routing.setDesired({ projectDir });
   }
 }
 
-export function saveProvider(ctx: AppContext, provider: string): void {
-  ctx.db.setSetting(KEY_PROVIDER, provider);
-}
-
-export function saveModel(ctx: AppContext, model: string): void {
-  ctx.db.setSetting(KEY_MODEL, model);
-}
-
-export function saveProject(ctx: AppContext, projectDir: string): void {
-  ctx.db.setSetting(KEY_PROJECT, projectDir);
+export function saveDesiredRoute(ctx: AppContext, patch: { provider?: RouteProvider; model?: string | null; projectDir?: string }): void {
+  if (patch.provider !== undefined) ctx.db.setSetting(KEY_PROVIDER, patch.provider);
+  if (patch.model !== undefined) ctx.db.setSetting(KEY_MODEL, patch.model ?? '');
+  if (patch.projectDir !== undefined) ctx.db.setSetting(KEY_PROJECT, patch.projectDir);
 }

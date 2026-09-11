@@ -22,19 +22,12 @@ export class DatabaseEngine {
   private migrate(): void {
     if (!this.db) return;
 
-    // Keep the initial database minimal: settings + lightweight session log.
+    // Keep the initial database minimal: desired routing state only.
+    // No session/conversation persistence (out of Phase 1 scope).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        project_dir TEXT NOT NULL,
-        created_at TEXT NOT NULL
       );
     `);
   }
@@ -54,19 +47,6 @@ export class DatabaseEngine {
         'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
       )
       .run(key, value);
-  }
-
-  insertSession(id: string, provider: string, model: string, projectDir: string, createdAt: string): void {
-    if (!this.db) return;
-    this.db
-      .prepare('INSERT INTO sessions (id, provider, model, project_dir, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, provider, model, projectDir, createdAt);
-  }
-
-  deleteSession(id: string): boolean {
-    if (!this.db) return false;
-    const result = this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
-    return result.changes > 0;
   }
 
   close(): void {

@@ -11,7 +11,7 @@ async function main() {
   // Initialize SQLite database.
   context.db.initialize();
 
-  // Restore persisted provider/model/project selections.
+  // Restore persisted desired route (provider/model/project).
   loadSettings(context);
 
   // Probe Ollama and Codex CLI once at startup.
@@ -40,11 +40,12 @@ async function main() {
     const models = await context.ollama.getModels();
     console.log(`Ollama models discovered: ${models.length}`);
   }
+  const routing = context.routing.status();
+  console.log(`Routing: ${routing.status}${routing.detail ? ` (${routing.detail})` : ''}`);
   console.log('Press Ctrl+C to stop.');
 
   const shutdown = async () => {
     try {
-      context.codexProcess.stop();
       context.db.close();
     } finally {
       process.exit(0);

@@ -2,10 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import type { OllamaStatus, Model } from '@heisenberg/contracts';
 import type { AppContext } from '../context.js';
 
-export async function registerOllamaRoutes(
-  app: FastifyInstance,
-  { ollama }: AppContext
-) {
+export async function registerOllamaRoutes(app: FastifyInstance, context: AppContext): Promise<void> {
+  const { ollama } = context;
+
   // Get Ollama status (online/offline, version).
   app.get('/api/ollama/status', async (): Promise<OllamaStatus> => {
     return ollama.getStatus();

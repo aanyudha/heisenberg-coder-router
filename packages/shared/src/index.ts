@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const execAsync = promisify(exec);
 
@@ -89,6 +90,24 @@ export function findRepoRoot(startDir: string): string {
     dir = parent;
   }
   return resolve(startDir);
+}
+
+/**
+ * Codex CLI configuration home (CODEX_HOME, default ~/.codex).
+ * Verified against codex-cli 0.154.0: `codex doctor` reports CODEX_HOME and
+ * reads config from <CODEX_HOME>/config.toml. The VS Code integration's
+ * app-server shares the same CODEX_HOME (see codex-engine.ts detection).
+ */
+export function getCodexHome(): string {
+  const envHome = process.env.CODEX_HOME;
+  if (envHome && envHome.trim().length > 0) {
+    return resolve(envHome.trim());
+  }
+  return join(homedir(), '.codex');
+}
+
+export function getCodexConfigPath(): string {
+  return join(getCodexHome(), 'config.toml');
 }
 
 let cachedRepoRoot: string | null = null;
