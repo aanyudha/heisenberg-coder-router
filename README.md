@@ -25,6 +25,43 @@ Choose the provider and model once in HCR, apply the route, then use Codex norma
 
 HCR does not launch Codex for you. There is no Start/Stop Codex, no background process, and no chat interface. HCR manages routing, not Codex conversations.
 
+## Control Plane and Data Plane
+
+HCR now has two responsibilities:
+
+**Control plane**
+
+- provider/model selection
+- Codex configuration
+- route verification
+- drift detection
+
+**Data plane — currently Ollama only**
+
+- transparent inference forwarding
+- streaming
+- live route verification
+- truthful telemetry
+
+```
+Codex CLI / VS Code
+        │
+        ▼
+HCR
+127.0.0.1:7876
+        │
+        ▼
+Ollama
+127.0.0.1:11434
+        │
+        ▼
+Local Model
+```
+
+For the Ollama route, HCR writes the HCR gateway address (`http://127.0.0.1:7876/gateway/ollama/v1`) into the Codex configuration as the provider `base_url`. Codex inference traffic for Ollama therefore flows through HCR, which transparently forwards it to the real Ollama upstream (`http://127.0.0.1:11434/v1`) while observing request metadata only. Because HCR sits in the data path, Ollama inference traffic routed through HCR **can now be observed live**: the dashboard shows IDLE → GENERATING during a request, and token usage, latency, and throughput are reported when Ollama reliably provides them.
+
+OpenAI remains **control-plane routing only** in this phase: HCR writes/normalizes the OpenAI route in the Codex configuration, but OpenAI inference traffic is not proxied or monitored by HCR.
+
 ## Installation
 
 ```bash
@@ -99,8 +136,15 @@ HCR provides a cockpit-style dashboard for monitoring:
 - routing status (Applied / Drift / Not Configured / Error)
 - Codex availability
 - Ollama availability
+- live gateway traffic (IDLE / GENERATING) for the Ollama data plane
 - routing drift (with a **Reapply HCR Route** action)
 - telemetry where available
+
+Route verification is layered and truthful:
+
+- **Codex Config** — `HCR Route Configured` only when the Codex config points at the HCR gateway route.
+- **Runtime** — Ollama online with the selected model discovered (or Codex installed for the OpenAI route).
+- **Live Traffic** — `HCR ROUTE VERIFIED` only after a real inference request has passed through the HCR gateway. Before that, wording stays at `Route configured — runtime not yet observed`.
 
 "HCR currently acts primarily as a routing control plane. Token usage, latency, throughput, and context utilization are shown only when HCR has a reliable telemetry source. Unknown metrics are displayed as unavailable rather than estimated."
 
@@ -131,7 +175,15 @@ Example response while HCR has no inference telemetry source:
 }
 ```
 
-Unknown metrics are `null` — never fake zeros. The only observed metric in the current phase is HCR server uptime.
+Unknown metrics are `null` — never fake zeros. When no gateway traffic has been observed, only HCR server uptime is real. Once Ollama traffic flows through the HCR gateway, `source` becomes `hcr-gateway` and request state, latency, time-to-first-byte, request count, and (when Ollama returns usage metadata) token counts are reported truthfully.
+
+Recent gateway request metadata (request id, provider, model, duration, status, token counts — never prompt or response content) is available at:
+
+```
+GET /api/telemetry/recent
+```
+
+Privacy: HCR never stores prompt contents, generated response text, source code sent to models, or conversation history. Gateway telemetry is metadata-only and kept in a bounded in-memory buffer; nothing is persisted to SQLite.
 
 ## External Dependencies
 
@@ -151,7 +203,8 @@ On first startup the application automatically creates `data/router.sqlite` with
 - `GET /api/routing` — desired vs applied route and routing status
 - `POST /api/routing/apply` — apply the desired provider/model route to Codex configuration
 - `GET /api/routing/verify` — verify routing (drift, config validity, VS Code Codex detection)
-- `GET /api/telemetry` — truthful telemetry snapshot (nulls for unobserved metrics)
+- `GET /api/telemetry` — truthful telemetry snapshot (nulls for unobserved metrics; live gateway state when traffic flows)
+- `GET /api/telemetry/recent` — recent gateway request metadata (no content)
 - `GET /api/providers` — list providers
 - `GET /api/providers/:provider/models` — models for a provider
 - `POST /api/providers/active` — set active provider (desired state)

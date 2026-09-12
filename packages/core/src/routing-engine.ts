@@ -8,10 +8,11 @@ import type {
   RoutingStatus,
   RoutingVerify,
 } from '@heisenberg/contracts';
-import { AppError } from '@heisenberg/shared';
+import { AppError, getHcrGatewayBaseUrl } from '@heisenberg/shared';
 import { getOllamaBaseUrl } from '@heisenberg/providers';
 import { CodexConfigEngine, HCR_PROVIDER_ID, type CodexConfigState } from './codex-config-engine.js';
 import { detectVsCodeCodex } from './vscode-detection.js';
+import type { GatewayEngine } from './gateway-engine.js';
 
 /**
  * Routing Engine - The HCR routing control plane.
@@ -33,7 +34,8 @@ export class RoutingEngine {
   constructor(
     private readonly codexConfig: CodexConfigEngine,
     private readonly getOllamaStatus: () => Promise<OllamaStatus>,
-    private readonly getCodexStatus: () => Promise<CodexStatus>
+    private readonly getCodexStatus: () => Promise<CodexStatus>,
+    private readonly gateway: GatewayEngine | null = null
   ) {}
 
   getDesired(): RouteConfig {
@@ -128,6 +130,32 @@ export class RoutingEngine {
         ? applied.model === null
         : applied.model === this.desired.model;
 
+    // Layered verification: config -> runtime -> live traffic. Only real
+    // observed gateway traffic may justify "Uses HCR Route" claims.
+    const ollama = await this.getOllamaStatus();
+    const desiredModelDiscovered =
+      this.desired.provider !== 'ollama' ||
+      !this.desired.model ||
+      ollama.models.some((m) => m.id === this.desired.model);
+    const runtimeAvailable =
+      this.desired.provider === 'openai'
+        ? codex.installed
+        : ollama.online && desiredModelDiscovered;
+    const trafficObserved = this.gateway !== null && this.gateway.totalRequests() > 0;
+    const configSynced =
+      this.desired.provider === 'ollama' ? state.routesThroughHcrGateway : status === 'applied';
+
+    const layerDetail =
+      !configSynced && this.desired.provider === 'ollama'
+        ? 'Codex config does not point at the HCR gateway. Reapply routing.'
+        : !runtimeAvailable
+          ? this.desired.provider === 'ollama'
+            ? 'Ollama offline or desired model not discovered.'
+            : 'Codex CLI not installed.'
+          : !trafficObserved
+            ? 'Route configured — runtime not yet observed.'
+            : 'Live inference traffic observed through the HCR gateway.';
+
     return {
       status,
       desired: this.getDesired(),
@@ -140,6 +168,12 @@ export class RoutingEngine {
         modelMatches,
       },
       vscodeCodex: vscode,
+      layers: {
+        configSynced,
+        runtimeAvailable,
+        trafficObserved,
+        detail: layerDetail,
+      },
       configPath: this.codexConfig.configPath,
     };
   }

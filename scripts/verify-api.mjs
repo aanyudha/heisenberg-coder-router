@@ -134,6 +134,46 @@ const goneStop = await j('/api/codex/stop', { method: 'POST' });
 check('POST /api/codex/start removed', goneStart.status === 404);
 check('POST /api/codex/stop removed', goneStop.status === 404);
 
+// ---- Gateway data plane (uses REAL Ollama upstream; non-streaming path) ----
+// A real /v1/chat/completions request through the HCR gateway exercises the
+// proxy, live tracking, and metadata observation end to end.
+const GATEWAY_BODY = JSON.stringify({
+  model: 'gpt-oss:20b',
+  messages: [{ role: 'user', content: 'reply with the single word: pong' }],
+  stream: false,
+});
+const gw = await j('/gateway/ollama/v1/chat/completions', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: GATEWAY_BODY,
+});
+check('gateway: real Ollama chat completion via HCR (200, choice present)',
+  gw.status === 200 && Array.isArray(gw.body?.choices) && gw.body.choices.length > 0,
+  gw.status === 200 ? `model=${gw.body.model ?? '?'}` : `status=${gw.status} ${JSON.stringify(gw.body).slice(0, 80)}`);
+
+// telemetry now reflects observed gateway traffic
+const telemetryGw = await j('/api/telemetry');
+check('telemetry after gateway: source hcr-gateway', telemetryGw.body.source === 'hcr-gateway', `source=${telemetryGw.body.source}`);
+check('telemetry after gateway: requestCount >= 1 (real, not fake)',
+  typeof telemetryGw.body.requestCount === 'number' && telemetryGw.body.requestCount >= 1, `requestCount=${telemetryGw.body.requestCount}`);
+check('telemetry after gateway: state idle (request completed)', telemetryGw.body.state === 'idle' && telemetryGw.body.active === false, `state=${telemetryGw.body.state}`);
+check('telemetry after gateway: latencyMs measured truthfully',
+  telemetryGw.body.latencyMs === null || (typeof telemetryGw.body.latencyMs === 'number' && telemetryGw.body.latencyMs >= 0), `latencyMs=${telemetryGw.body.latencyMs}`);
+// Tokens only if Ollama returned usage metadata — must be null or positive, never 0-faked.
+check('telemetry after gateway: token fields null or positive',
+  telemetryGw.body.totalTokens === null || telemetryGw.body.totalTokens > 0, `totalTokens=${telemetryGw.body.totalTokens}`);
+
+// recent traffic metadata — must contain no prompt/response content
+const recent = await j('/api/telemetry/recent');
+const recentReq = recent.body.requests?.[recent.body.requests.length - 1];
+check('GET /api/telemetry/recent has the gateway request', recent.status === 200 && recentReq !== undefined);
+check('recent: provider ollama, model gpt-oss:20b',
+  recentReq?.provider === 'ollama' && recentReq?.model === 'gpt-oss:20b', `${recentReq?.provider}/${recentReq?.model}`);
+check('recent: completed state with duration', recentReq?.state === 'completed' && typeof recentReq?.durationMs === 'number');
+const recentJson = JSON.stringify(recent.body);
+check('privacy: no prompt/response content in telemetry',
+  !recentJson.includes('pong') && !recentJson.toLowerCase().includes('reply with'), 'metadata only');
+
 child.kill();
 await new Promise((r) => setTimeout(r, 500));
 console.log('\n=== API RESULTS ===');

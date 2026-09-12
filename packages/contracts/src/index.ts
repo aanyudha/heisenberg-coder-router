@@ -105,6 +105,16 @@ export interface RoutingVerify {
     confirmed: boolean;
     detail: string;
   };
+  /** Layered route verification (config / runtime / live traffic). */
+  layers: {
+    /** Codex config points at the HCR gateway route. */
+    configSynced: boolean;
+    /** Ollama online and desired model discovered. */
+    runtimeAvailable: boolean;
+    /** A real inference request has passed through the HCR gateway. */
+    trafficObserved: boolean;
+    detail: string;
+  };
   configPath: string;
 }
 
@@ -115,18 +125,37 @@ export interface ApplyRouteResponse {
 
 // ---- Telemetry (truthful observability) ----
 
-/** Where telemetry values came from. 'unavailable' = HCR cannot observe. */
-export type TelemetrySource = 'hcr' | 'ollama' | 'codex' | 'provider' | 'unavailable';
+/** Where telemetry values came from. 'hcr-gateway' = observed in the data path. */
+export type TelemetrySource = 'hcr-gateway' | 'hcr' | 'ollama' | 'codex' | 'provider' | 'unavailable';
+
+/** Observable gateway request states (only reported when actually observed). */
+export type GatewayRequestState =
+  | 'idle'
+  | 'receiving'
+  | 'forwarding'
+  | 'streaming'
+  | 'completed'
+  | 'error';
 
 export interface TelemetrySnapshot {
   source: TelemetrySource;
+
+  /** True while a gateway request is currently in flight. */
+  active: boolean;
+  /** Current gateway request state ('idle' when nothing is in flight). */
+  state: GatewayRequestState;
 
   /** Provider/model of the current desired route (context for the metrics). */
   provider: RouteProvider | null;
   model: string | null;
 
-  // Inference metrics — null when HCR has no reliable source (it is not in
-  // the inference data path). Unknown is NOT the same as zero.
+  /** Client identity only when reliably observable; otherwise null. */
+  client: string | null;
+  /** Live/last gateway request id, when one exists. */
+  requestId: string | null;
+
+  // Inference metrics — null when not reliably observable. Unknown is NOT
+  // the same as zero.
   inputTokens?: number | null;
   outputTokens?: number | null;
   totalTokens?: number | null;
@@ -137,6 +166,7 @@ export interface TelemetrySnapshot {
   requestCount?: number | null;
 
   latencyMs?: number | null;
+  timeToFirstByteMs?: number | null;
   averageLatencyMs?: number | null;
 
   tokensPerSecond?: number | null;
@@ -145,4 +175,21 @@ export interface TelemetrySnapshot {
   uptimeSeconds?: number | null;
 
   observedAt?: string;
+}
+
+/** Metadata-only record of one observed gateway request (no content). */
+export interface RecentRequest {
+  requestId: string;
+  provider: 'ollama';
+  model: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  state: GatewayRequestState;
+  responseStatus: number | null;
+  streaming: boolean;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  error: string | null;
 }

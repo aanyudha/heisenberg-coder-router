@@ -110,6 +110,44 @@ export function getCodexConfigPath(): string {
   return join(getCodexHome(), 'config.toml');
 }
 
+/** Default HCR server origin (localhost-only control/data plane). */
+export const HCR_DEFAULT_ORIGIN = 'http://127.0.0.1:7876';
+
+/** HCR gateway route prefix for Ollama inference traffic. */
+export const HCR_GATEWAY_PREFIX = '/gateway/ollama/v1';
+
+/**
+ * Base URL Codex uses for the HCR-managed Ollama provider: the HCR gateway,
+ * NOT Ollama directly. This is what puts HCR in the inference data path so
+ * live route verification and truthful telemetry are possible.
+ */
+export function getHcrGatewayBaseUrl(): string {
+  const origin = process.env.HCR_ORIGIN?.trim();
+  return `${origin && origin.length > 0 ? origin.replace(/\/+$/, '') : HCR_DEFAULT_ORIGIN}${HCR_GATEWAY_PREFIX}`;
+}
+
+/**
+ * Resolved Ollama upstream base URL for the gateway. Loop prevention: the
+ * upstream must never point back at the HCR gateway origin.
+ */
+export function getGatewayUpstreamBaseUrl(): string {
+  const host = process.env.OLLAMA_HOST;
+  const ollamaBase =
+    host && host.trim().length > 0
+      ? /^https?:\/\//.test(host.trim())
+        ? host.trim().replace(/\/+$/, '')
+        : `http://${host.trim()}`
+      : 'http://127.0.0.1:11434';
+  const upstream = `${ollamaBase}/v1`;
+  const origin = process.env.HCR_ORIGIN?.trim().replace(/\/+$/, '') ?? HCR_DEFAULT_ORIGIN;
+  if (upstream.startsWith(origin)) {
+    throw new Error(
+      `Gateway loop prevented: Ollama upstream (${upstream}) must not point back at the HCR origin (${origin}).`
+    );
+  }
+  return upstream;
+}
+
 let cachedRepoRoot: string | null = null;
 
 export function getRepoRoot(): string {

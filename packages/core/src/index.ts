@@ -8,3 +8,4 @@ export { CodexConfigEngine } from './codex-config-engine.js';
 export { RoutingEngine, ollamaEndpoint } from './routing-engine.js';
 export { detectVsCodeCodex } from './vscode-detection.js';
 export { TelemetryEngine } from './telemetry-engine.js';
+export { GatewayEngine, type ObservedUsage } from './gateway-engine.js';

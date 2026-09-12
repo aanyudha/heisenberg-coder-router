@@ -246,6 +246,63 @@ body {
   color: var(--text);
 }
 
+/* ---------- live traffic + route verification panels ---------- */
+
+.live-panel,
+.verify-layers {
+  margin-top: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.live-grid,
+.verify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 18px;
+}
+
+.live-panel .panel-title,
+.verify-layers .panel-title {
+  margin-bottom: 10px;
+}
+
+.live-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-row-label {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.live-row-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-layers .muted.small {
+  margin-top: 10px;
+}
+
 /* ---------- routing controls ---------- */
 
 .routing-controls {

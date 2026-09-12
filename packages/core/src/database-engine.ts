@@ -30,6 +30,9 @@ export class DatabaseEngine {
         value TEXT NOT NULL
       );
     `);
+    // Migration cleanup: databases created by the pre-routing launcher builds
+    // may still carry a sessions table; drop it idempotently.
+    this.db.exec('DROP TABLE IF EXISTS sessions;');
   }
 
   getSetting(key: string): string | null {

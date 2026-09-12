@@ -14,6 +14,7 @@ import { registerOllamaRoutes } from './routes/ollama.js';
 import { registerCodexRoutes } from './routes/codex.js';
 import { registerProjectRoutes } from './routes/project.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { registerGateway } from './gateway.js';
 
 export const HOST = '127.0.0.1';
 export const PORT = 7876;
@@ -65,6 +66,10 @@ export async function createServer(context: AppContext = createContext()): Promi
   await registerCodexRoutes(app, context);
   await registerProjectRoutes(app, context);
   await registerTelemetryRoutes(app, context);
+
+  // Data plane: transparent Ollama gateway (streaming, metadata-only
+  // observation). Registered last so /api routes keep precedence.
+  await registerGateway(app, context);
 
   return { app, context };
 }

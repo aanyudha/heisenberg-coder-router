@@ -29,7 +29,26 @@ interface RoutingVerify {
     modelMatches: boolean;
   };
   vscodeCodex: VsCodeCodexInfo;
+  layers?: {
+    configSynced: boolean;
+    runtimeAvailable: boolean;
+    trafficObserved: boolean;
+    detail: string;
+  };
   configPath: string;
+}
+
+interface TelemetryLive {
+  source: string;
+  active: boolean;
+  state: string;
+  provider: string | null;
+  model: string | null;
+  client: string | null;
+  requestId: string | null;
+  latencyMs: number | null;
+  timeToFirstByteMs: number | null;
+  requestCount: number | null;
 }
 
 interface StatusResponse {
@@ -48,6 +67,26 @@ const ROUTE_STATE_LABEL: Record<RoutingState['status'], string> = {
   error: 'CONFIG ERROR',
 };
 
+/** Live gateway state line for the ACTIVE ROUTE gauge. */
+function liveState(telemetry: TelemetryLive | null): { active: boolean; label: string } {
+  if (telemetry?.active) {
+    return { active: true, label: '● GENERATING' };
+  }
+  return { active: false, label: '○ IDLE' };
+}
+
+/** One metadata row inside the live-traffic / verification panels. */
+function LiveRow({ label, value, led }: { label: string; value: string; led?: GaugeStatus }) {
+  return (
+    <div className="live-row">
+      <span className="live-row-label">{label}</span>
+      <span className="live-row-value">
+        {led && <span className={`led ${led}`} aria-hidden="true" />} {value}
+      </span>
+    </div>
+  );
+}
+
 const routeGaugeStatus: Record<RoutingState['status'], GaugeStatus> = {
   applied: 'ok',
   drift: 'error',
@@ -59,6 +98,7 @@ export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [verify, setVerify] = useState<RoutingVerify | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryLike | null>(null);
+  const [live, setLive] = useState<TelemetryLive | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,7 +107,22 @@ export default function App() {
       const [statusRes, telemetryRes] = await Promise.all([fetch('/api/status'), fetch('/api/telemetry')]);
       if (!statusRes.ok) throw new Error(`Server responded ${statusRes.status}`);
       setStatus((await statusRes.json()) as StatusResponse);
-      if (telemetryRes.ok) setTelemetry((await telemetryRes.json()) as TelemetryLike);
+      if (telemetryRes.ok) {
+        const t = (await telemetryRes.json()) as TelemetryLike & TelemetryLive;
+        setTelemetry(t);
+        setLive({
+          source: t.source,
+          active: t.active,
+          state: t.state,
+          provider: t.provider,
+          model: t.model,
+          client: t.client,
+          requestId: t.requestId,
+          latencyMs: t.latencyMs,
+          timeToFirstByteMs: t.timeToFirstByteMs,
+          requestCount: t.requestCount,
+        });
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect to server');
@@ -139,6 +194,7 @@ export default function App() {
   if (!status) return null;
 
   const { routing, codex, ollama } = status;
+  const liveRoute = liveState(live);
   const desiredLabel = `${routing.desired.provider}${routing.desired.model ? ` / ${routing.desired.model}` : ''}`;
   const appliedLabel = `${routing.applied.provider ?? 'openai (default)'}${routing.applied.model ? ` / ${routing.applied.model}` : ''}`;
 
@@ -152,11 +208,11 @@ export default function App() {
           <div className="gauge-bay">
             <Gauge
               label="ACTIVE ROUTE"
-              value={routing.desired.provider === 'openai' ? 'Codex Cloud' : (routing.desired.model ?? 'NO MODEL')}
-              sub={routing.desired.provider === 'openai' ? 'OpenAI' : 'Ollama'}
-              state={ROUTE_STATE_LABEL[routing.status]}
-              status={routeGaugeStatus[routing.status]}
-              fill={routing.status === 'applied' ? 1 : routing.status === 'drift' ? 0.5 : null}
+              value={liveRoute.active ? (live?.model ?? routing.desired.model ?? '—') : routing.desired.provider === 'openai' ? 'Codex Cloud' : (routing.desired.model ?? 'NO MODEL')}
+              sub={liveRoute.active ? 'OLLAMA' : routing.desired.provider === 'openai' ? 'OpenAI' : 'Ollama'}
+              state={liveRoute.label}
+              status={liveRoute.active ? 'ok' : routeGaugeStatus[routing.status]}
+              fill={liveRoute.active ? 0.6 : routing.status === 'applied' ? 1 : routing.status === 'drift' ? 0.5 : null}
               size={260}
             />
             <Gauge
@@ -178,12 +234,30 @@ export default function App() {
             <Readout label="Codex" value={codex.installed ? 'INSTALLED' : 'NOT INSTALLED'} status={codex.installed ? 'ok' : 'error'} detail={codex.version} />
             <Readout
               label="VS Code"
-              value={vscodeLabel(verify?.vscodeCodex)}
-              status={vscodeStatusGauge(verify?.vscodeCodex)}
+              value={vscodeLabel(verify?.vscodeCodex, verify?.layers?.trafficObserved)}
+              status={vscodeStatusGauge(verify?.vscodeCodex, verify?.layers?.trafficObserved)}
               detail={verify?.vscodeCodex.detected ? undefined : 'not detected on this machine'}
             />
             <Readout label="Project" value={status.project?.name ?? '—'} detail={status.project?.path} />
           </div>
+
+          {/* LIVE TRAFFIC panel — only real gateway observations */}
+          {live && (live.active || live.requestCount !== null) && (
+            <div className="live-panel">
+              <div className="panel-title">LIVE TRAFFIC</div>
+              <div className="live-grid">
+                <LiveRow label="State" value={live.active ? 'GENERATING' : 'IDLE'} led={live.active ? 'ok' : 'neutral'} />
+                <LiveRow label="Provider" value={live.provider === 'openai' ? 'OpenAI' : 'Ollama'} />
+                <LiveRow label="Model" value={live.model ?? '—'} />
+                <LiveRow label="Client" value={live.client ?? 'Codex / Unknown Client'} />
+                <LiveRow
+                  label="Elapsed"
+                  value={live.active && live.latencyMs !== null ? `${(live.latencyMs / 1000).toFixed(1)}s` : '—'}
+                />
+                <LiveRow label="Requests observed" value={live.requestCount !== null ? String(live.requestCount) : '0 (not yet observed)'} />
+              </div>
+            </div>
+          )}
 
           {/* Drift banner: visible but not disruptive */}
           {routing.status === 'drift' && (
@@ -199,6 +273,43 @@ export default function App() {
             <div className="drift-banner error" role="alert">
               <span className="drift-title">CONFIG ERROR</span>
               <span className="drift-detail">{routing.detail ?? 'Codex config could not be parsed.'}</span>
+            </div>
+          )}
+
+          {/* Layered route verification: config / runtime / live traffic */}
+          {verify?.layers && (
+            <div className="verify-layers">
+              <div className="panel-title">ROUTE VERIFICATION</div>
+              <div className="verify-grid">
+                <LiveRow
+                  label="Codex Config"
+                  value={verify.layers.configSynced ? 'HCR Route Configured' : 'Not Pointing at HCR'}
+                  led={verify.layers.configSynced ? 'ok' : 'warn'}
+                />
+                <LiveRow
+                  label="Runtime"
+                  value={
+                    routing.desired.provider === 'openai'
+                      ? verify.checks.codexInstalled
+                        ? 'Codex Installed'
+                        : 'Codex Missing'
+                      : ollama.online
+                        ? 'Ollama Available'
+                        : 'Ollama Offline'
+                  }
+                  led={verify.layers.runtimeAvailable ? 'ok' : 'error'}
+                />
+                <LiveRow
+                  label="Live Traffic"
+                  value={
+                    verify.layers.trafficObserved
+                      ? 'HCR ROUTE VERIFIED'
+                      : 'Not Observed'
+                  }
+                  led={verify.layers.trafficObserved ? 'ok' : 'neutral'}
+                />
+              </div>
+              <p className="muted small">{verify.layers.detail}</p>
             </div>
           )}
 
@@ -270,17 +381,26 @@ function Readout({
   );
 }
 
-function vscodeLabel(vscode?: VsCodeCodexInfo): string {
+/** VS Code status label follows the strict layered truthfulness rules. */
+function vscodeLabel(
+  vscode: VsCodeCodexInfo | undefined,
+  trafficObserved: boolean | undefined
+): string {
   if (!vscode) return '…';
   if (!vscode.detected) return 'NOT DETECTED';
-  if (vscode.confirmed) return 'USES HCR ROUTE';
+  // "Uses HCR Route" requires the shared config route AND observed traffic.
+  if (vscode.confirmed && trafficObserved) return 'USES HCR ROUTE';
+  if (vscode.confirmed) return 'CONFIG ROUTE AVAILABLE';
   return 'ROUTE NOT VERIFIED';
 }
 
-function vscodeStatusGauge(vscode?: VsCodeCodexInfo): GaugeStatus {
+function vscodeStatusGauge(
+  vscode: VsCodeCodexInfo | undefined,
+  trafficObserved: boolean | undefined
+): GaugeStatus {
   if (!vscode) return 'neutral';
   if (!vscode.detected) return 'neutral';
-  if (vscode.confirmed) return 'ok';
+  if (vscode.confirmed && trafficObserved) return 'ok';
   return 'warn';
 }
 

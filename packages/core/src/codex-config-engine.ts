@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
-import { AppError, getCodexConfigPath } from '@heisenberg/shared';
+import { AppError, getCodexConfigPath, getGatewayUpstreamBaseUrl, getHcrGatewayBaseUrl } from '@heisenberg/shared';
 import { getOllamaBaseUrl } from '@heisenberg/providers';
 
 /**
@@ -59,6 +59,8 @@ export interface CodexConfigState {
   model: string | null;
   ollamaTablePresent: boolean;
   ollamaTableBaseUrl: string | null;
+  /** True when the HCR provider table's base_url points at the HCR gateway. */
+  routesThroughHcrGateway: boolean;
 }
 
 export class CodexConfigEngine {
@@ -83,10 +85,14 @@ export class CodexConfigEngine {
         model: null,
         ollamaTablePresent: false,
         ollamaTableBaseUrl: null,
+        routesThroughHcrGateway: false,
       };
     }
     try {
       const parsed = this.parse(readFileSync(this.configPath, 'utf-8'));
+      const baseUrl = parsed.ollamaTableKeys['base_url']
+        ? unquote(parsed.ollamaTableKeys['base_url'].valueText)
+        : null;
       return {
         configExists: true,
         validToml: parsed.errors.length === 0,
@@ -94,9 +100,8 @@ export class CodexConfigEngine {
         providerKey: parsed.topLevel['model_provider'] ? unquote(parsed.topLevel['model_provider']) : null,
         model: parsed.topLevel['model'] ? unquote(parsed.topLevel['model']) : null,
         ollamaTablePresent: parsed.ollamaTableStart !== null,
-        ollamaTableBaseUrl: parsed.ollamaTableKeys['base_url']
-          ? unquote(parsed.ollamaTableKeys['base_url'].valueText)
-          : null,
+        ollamaTableBaseUrl: baseUrl,
+        routesThroughHcrGateway: baseUrl === getHcrGatewayBaseUrl(),
       };
     } catch (error) {
       return {
@@ -107,6 +112,7 @@ export class CodexConfigEngine {
         model: null,
         ollamaTablePresent: false,
         ollamaTableBaseUrl: null,
+        routesThroughHcrGateway: false,
       };
     }
   }
@@ -149,14 +155,19 @@ export class CodexConfigEngine {
 
     let updated: string;
     if (route.provider === 'ollama') {
-      const baseUrl = `${getOllamaBaseUrl()}/v1`;
+      // Data plane: Codex sends inference traffic to the HCR gateway, which
+      // forwards transparently to the real Ollama upstream. This puts HCR in
+      // the inference path for live route verification and truthful telemetry.
+      const gatewayUrl = getHcrGatewayBaseUrl();
+      // Loop prevention: validate the upstream BEFORE writing the route.
+      getGatewayUpstreamBaseUrl(); // throws if upstream would point at HCR
       updated = this.upsertTopLevel(original, [
         { key: 'model', value: quote(model!) },
         { key: 'model_provider', value: quote(HCR_PROVIDER_ID) },
       ]);
       updated = this.upsertOllamaTable(updated, {
         name: '"Ollama (HCR)"',
-        base_url: quote(baseUrl),
+        base_url: quote(gatewayUrl),
         wire_api: '"responses"',
       });
     } else {
