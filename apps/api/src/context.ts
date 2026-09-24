@@ -40,6 +40,7 @@ export function createContext(): AppContext {
 const KEY_PROVIDER = 'active_provider';
 const KEY_MODEL = 'active_model';
 const KEY_PROJECT = 'project_dir';
+const KEY_CONTEXT_WINDOW = 'context_window';
 
 /** Restore HCR desired route (provider/model/project) persisted in SQLite. */
 export function loadSettings(ctx: AppContext): void {
@@ -51,6 +52,13 @@ export function loadSettings(ctx: AppContext): void {
   if (model) {
     ctx.routing.setDesired({ model });
   }
+  const contextWindow = ctx.db.getSetting(KEY_CONTEXT_WINDOW);
+  if (contextWindow) {
+    const parsed = Number.parseInt(contextWindow, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      ctx.routing.setDesired({ contextWindow: parsed });
+    }
+  }
   const projectDir = ctx.db.getSetting(KEY_PROJECT);
   if (projectDir) {
     // Fire and forget: restored project is re-validated on apply.
@@ -61,8 +69,14 @@ export function loadSettings(ctx: AppContext): void {
   }
 }
 
-export function saveDesiredRoute(ctx: AppContext, patch: { provider?: RouteProvider; model?: string | null; projectDir?: string }): void {
+export function saveDesiredRoute(
+  ctx: AppContext,
+  patch: { provider?: RouteProvider; model?: string | null; contextWindow?: number | null; projectDir?: string }
+): void {
   if (patch.provider !== undefined) ctx.db.setSetting(KEY_PROVIDER, patch.provider);
   if (patch.model !== undefined) ctx.db.setSetting(KEY_MODEL, patch.model ?? '');
+  if (patch.contextWindow !== undefined) {
+    ctx.db.setSetting(KEY_CONTEXT_WINDOW, patch.contextWindow !== null ? String(patch.contextWindow) : '');
+  }
   if (patch.projectDir !== undefined) ctx.db.setSetting(KEY_PROJECT, patch.projectDir);
 }

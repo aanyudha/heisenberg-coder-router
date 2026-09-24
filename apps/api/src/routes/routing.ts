@@ -29,11 +29,23 @@ export async function registerRoutingRoutes(app: FastifyInstance, context: AppCo
       saveDesiredRoute(context, { provider });
       // Switching provider clears the model: one routing decision.
       saveDesiredRoute(context, { model: null });
+      // A context window belongs to a specific Ollama model only.
+      saveDesiredRoute(context, { contextWindow: null });
     }
     if (body.model !== undefined) {
       const model = body.model?.trim() || null;
       routing.setDesired({ model });
       saveDesiredRoute(context, { model });
+      // New model: previous context-window observation is invalid.
+      saveDesiredRoute(context, { contextWindow: null });
+      if (model) {
+        // Observe the model's real context window up front so the applied
+        // Codex config carries model_context_window (Codex otherwise falls
+        // back to its built-in default for unknown custom-provider models).
+        const contextWindow = await routing.getContextWindow();
+        routing.setDesired({ contextWindow });
+        saveDesiredRoute(context, { contextWindow });
+      }
     }
 
     // Project: from body, or fall back to the registered project.
@@ -76,6 +88,9 @@ export async function registerRoutingRoutes(app: FastifyInstance, context: AppCo
     const trimmed = model.trim();
     routing.setDesired({ model: trimmed });
     saveDesiredRoute(context, { model: trimmed });
+    // New model: previous context-window observation is invalid.
+    routing.setDesired({ contextWindow: null });
+    saveDesiredRoute(context, { contextWindow: null });
     reply.send({ success: true, model: trimmed });
   });
 }

@@ -68,6 +68,12 @@ export interface RouteConfig {
   model: string | null;
   /** Project directory Codex will run against (HCR-side metadata). */
   projectDir: string | null;
+  /**
+   * Ollama context window (tokens) HCR advertises to Codex via
+   * `model_context_window` in config.toml. Null = HCR has no observed value
+   * and must not guess (Codex then applies its own default).
+   */
+  contextWindow: number | null;
 }
 
 export type RouteStatus = 'applied' | 'drift' | 'not_configured' | 'error';

@@ -1,4 +1,5 @@
 import { existsSync } from 'fs';
+import { getOllamaContextInfo } from '@heisenberg/providers';
 import type {
   AppliedRoute,
   CodexStatus,
@@ -29,7 +30,7 @@ import type { GatewayEngine } from './gateway-engine.js';
  *   error          - Codex config unreadable/malformed
  */
 export class RoutingEngine {
-  private desired: RouteConfig = { provider: 'ollama', model: null, projectDir: null };
+  private desired: RouteConfig = { provider: 'ollama', model: null, projectDir: null, contextWindow: null };
 
   constructor(
     private readonly codexConfig: CodexConfigEngine,
@@ -50,12 +51,27 @@ export class RoutingEngine {
     if (route.provider !== undefined) {
       this.desired.provider = route.provider;
       this.desired.model = null;
+      // Context window belongs to the Ollama route; a provider switch drops it.
+      this.desired.contextWindow = null;
     }
     if (route.model !== undefined) {
       // Only meaningful for ollama; openai clears it.
       this.desired.model = this.desired.provider === 'openai' ? null : route.model;
+      // A new model invalidates the previous context-window observation.
+      this.desired.contextWindow = null;
     }
     if (route.projectDir !== undefined) this.desired.projectDir = route.projectDir;
+    if (route.contextWindow !== undefined) {
+      // Only meaningful for ollama; openai never carries a context window.
+      this.desired.contextWindow = this.desired.provider === 'openai' ? null : route.contextWindow;
+    }
+  }
+
+  /** Context window (tokens) for the desired Ollama model, or null when not observable. */
+  async getContextWindow(): Promise<number | null> {
+    if (this.desired.provider !== 'ollama' || !this.desired.model) return null;
+    const info = await getOllamaContextInfo(this.desired.model);
+    return info.contextWindow;
   }
 
   /**
@@ -85,9 +101,20 @@ export class RoutingEngine {
       }
     }
 
+    // Observe the model's real context window BEFORE writing config. HCR
+    // writes `model_context_window` into Codex config so Codex stops assuming
+    // its tiny built-in default and planning against the wrong budget. A null
+    // (Ollama offline / value not observable) writes nothing rather than a guess.
+    const contextWindow =
+      this.desired.provider === 'ollama' ? await this.getContextWindow() : null;
+    if (contextWindow !== null) {
+      this.desired.contextWindow = contextWindow;
+    }
+
     this.codexConfig.applyRoute({
       provider: this.desired.provider,
       model: this.desired.model,
+      contextWindow: this.desired.contextWindow,
     });
 
     return this.status();
@@ -210,6 +237,14 @@ export class RoutingEngine {
         return {
           status: 'drift',
           detail: 'OpenAI route expects no model override in Codex config, but a model key is present.',
+        };
+      }
+      if (this.desired.provider === 'ollama' && this.desired.contextWindow !== null && state.contextWindow === null) {
+        // Route is applied, but Codex has no context window for this model and
+        // will fall back to its built-in default. Informational, not drift.
+        return {
+          status: 'applied',
+          detail: `Route applied. Note: model_context_window is not set in the Codex config; Codex will use its built-in default context window for this model.`,
         };
       }
       return { status: 'applied' };

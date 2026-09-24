@@ -89,6 +89,80 @@ export async function getOllamaStatus(): Promise<OllamaStatus> {
   }
 }
 
+export interface OllamaContextInfo {
+  /** Runtime context size (num_ctx) observed via /api/ps when the model is loaded; null otherwise. */
+  loadedContextSize: number | null;
+  /** Model-declared base context size (ollama.modelfile parameter) via /api/show; null otherwise. */
+  declaredContextSize: number | null;
+  /** The effective context window Codex should assume: loaded value wins, then declared. */
+  contextWindow: number | null;
+}
+
+/**
+ * Discover a model's context size. Two layers, reported separately so callers
+ * can distinguish "observed at runtime" from "declared by the model":
+ *   - /api/ps returns num_ctx ONLY while the model is loaded in memory.
+ *   - /api/show returns the base ollama.modelfile parameter num_ctx
+ *     (declared default, typically 4096) but not an effective override.
+ * Never throws: nulls mean "not observable right now", not zero.
+ */
+export async function getOllamaContextInfo(model: string): Promise<OllamaContextInfo> {
+  let loaded: number | null = null;
+  let declared: number | null = null;
+  try {
+    const ps = await fetch(`${getOllamaBaseUrl()}/api/ps`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(3000),
+      headers: { Accept: 'application/json' },
+    });
+    if (ps.ok) {
+      const data = (await ps.json()) as { models?: Array<{ name: string; context_length?: number }> };
+      const entry = data.models?.find(
+        (m) => m.name === model || m.name.split(':')[0] === model.split(':')[0]
+      );
+      if (typeof entry?.context_length === 'number' && entry.context_length > 0) {
+        loaded = entry.context_length;
+      }
+    }
+  } catch {
+    // Not loaded / unreachable: stays null.
+  }
+  try {
+    const show = await fetch(`${getOllamaBaseUrl()}/api/show`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(3000),
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    if (show.ok) {
+      const data = (await show.json()) as {
+        model_info?: Record<string, unknown>;
+        parameters?: string;
+      };
+      // Base model_info key, e.g. "<arch>.context_length" (no overrides applied).
+      const infoKey = Object.keys(data.model_info ?? {}).find(
+        (k) => k.endsWith('.context_length')
+      );
+      const infoValue = infoKey ? data.model_info?.[infoKey] : undefined;
+      if (typeof infoValue === 'number' && infoValue > 0) {
+        declared = infoValue;
+      }
+      // Explicit num_ctx Modelfile parameter line ("num_ctx 32768").
+      const param = data.parameters
+        ?.split('\n')
+        .map((line) => line.trim())
+        .find((line) => /^num_ctx\s+\d+$/.test(line));
+      if (param) {
+        const value = Number.parseInt(param.split(/\s+/)[1] ?? '', 10);
+        if (Number.isFinite(value) && value > 0) declared = value;
+      }
+    }
+  } catch {
+    // Unreachable: stays null.
+  }
+  return { loadedContextSize: loaded, declaredContextSize: declared, contextWindow: loaded ?? declared };
+}
+
 /**
  * Format bytes to human readable string.
  */

@@ -37,7 +37,7 @@ import { getOllamaBaseUrl } from '@heisenberg/providers';
 export const HCR_PROVIDER_ID = 'hcr-ollama';
 
 /** Keys/sections HCR owns in Codex config.toml. */
-const OWNED_KEYS = ['model', 'model_provider'] as const;
+const OWNED_KEYS = ['model', 'model_provider', 'model_context_window'] as const;
 
 interface ParsedConfig {
   /** Top-level scalar key/value pairs (raw TOML value text). */
@@ -57,6 +57,8 @@ export interface CodexConfigState {
   /** Explicit model_provider value, or null when absent (Codex default: openai). */
   providerKey: string | null;
   model: string | null;
+  /** Top-level model_context_window value, or null when absent/invalid. */
+  contextWindow: number | null;
   ollamaTablePresent: boolean;
   ollamaTableBaseUrl: string | null;
   /** True when the HCR provider table's base_url points at the HCR gateway. */
@@ -83,6 +85,7 @@ export class CodexConfigEngine {
         validToml: true,
         providerKey: null,
         model: null,
+        contextWindow: null,
         ollamaTablePresent: false,
         ollamaTableBaseUrl: null,
         routesThroughHcrGateway: false,
@@ -93,12 +96,15 @@ export class CodexConfigEngine {
       const baseUrl = parsed.ollamaTableKeys['base_url']
         ? unquote(parsed.ollamaTableKeys['base_url'].valueText)
         : null;
+      const contextWindowRaw = parsed.topLevel['model_context_window'];
+      const contextWindowValue = contextWindowRaw ? Number.parseInt(unquote(contextWindowRaw), 10) : Number.NaN;
       return {
         configExists: true,
         validToml: parsed.errors.length === 0,
         parseError: parsed.errors.length > 0 ? parsed.errors.join('; ') : undefined,
         providerKey: parsed.topLevel['model_provider'] ? unquote(parsed.topLevel['model_provider']) : null,
         model: parsed.topLevel['model'] ? unquote(parsed.topLevel['model']) : null,
+        contextWindow: Number.isFinite(contextWindowValue) && contextWindowValue > 0 ? contextWindowValue : null,
         ollamaTablePresent: parsed.ollamaTableStart !== null,
         ollamaTableBaseUrl: baseUrl,
         routesThroughHcrGateway: baseUrl === getHcrGatewayBaseUrl(),
@@ -110,6 +116,7 @@ export class CodexConfigEngine {
         parseError: error instanceof Error ? error.message : 'unreadable config',
         providerKey: null,
         model: null,
+        contextWindow: null,
         ollamaTablePresent: false,
         ollamaTableBaseUrl: null,
         routesThroughHcrGateway: false,
@@ -119,9 +126,14 @@ export class CodexConfigEngine {
 
   /**
    * Apply the desired route to Codex config. Provider and model are written
-   * together as one routing decision.
+   * together as one routing decision. contextWindow (when observed) is
+   * written as the top-level model_context_window key.
    */
-  applyRoute(route: { provider: 'ollama' | 'openai'; model: string | null }): {
+  applyRoute(route: {
+    provider: 'ollama' | 'openai';
+    model: string | null;
+    contextWindow?: number | null;
+  }): {
     backupCreated: boolean;
     changed: boolean;
   } {
@@ -170,6 +182,10 @@ export class CodexConfigEngine {
         base_url: quote(gatewayUrl),
         wire_api: '"responses"',
       });
+      // Without this key Codex falls back to its built-in default context
+      // window for unknown custom-provider models and plans against the
+      // wrong budget. Only written when HCR actually observed a value.
+      updated = this.upsertContextWindow(updated, route.contextWindow ?? null);
     } else {
       // OpenAI: strip every HCR-owned key and the Ollama provider table so no
       // stale local-provider state leaks into the OpenAI/Codex cloud route.
@@ -312,6 +328,15 @@ export class CodexConfigEngine {
       return true;
     });
     return filtered.join('\n');
+  }
+
+  /** Write or clear the top-level model_context_window key (HCR-owned). */
+  private upsertContextWindow(text: string, contextWindow: number | null): string {
+    if (contextWindow === null || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+      // Nothing observed: never guess. Remove any HCR-written value instead.
+      return this.removeTopLevel(text, ['model_context_window']);
+    }
+    return this.upsertTopLevel(text, [{ key: 'model_context_window', value: String(Math.floor(contextWindow)) }]);
   }
 
   /** Create or surgically update the HCR-owned [model_providers.ollama] table. */

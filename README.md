@@ -58,7 +58,17 @@ Ollama
 Local Model
 ```
 
-For the Ollama route, HCR writes the HCR gateway address (`http://127.0.0.1:7876/gateway/ollama/v1`) into the Codex configuration as the provider `base_url`. Codex inference traffic for Ollama therefore flows through HCR, which transparently forwards it to the real Ollama upstream (`http://127.0.0.1:11434/v1`) while observing request metadata only. Because HCR sits in the data path, Ollama inference traffic routed through HCR **can now be observed live**: the dashboard shows IDLE → GENERATING during a request, and token usage, latency, and throughput are reported when Ollama reliably provides them.
+For the Ollama route, HCR writes the HCR gateway address (`http://127.0.0.1:7876/gateway/ollama/v1`) into the Codex configuration as the provider `base_url`. Codex inference traffic for Ollama therefore flows through HCR, which transparently forwards it to the real Ollama upstream (`http://127.0.0.1:11434/v1`) while observing request metadata only.
+
+### Context window (`model_context_window`)
+
+Codex does not know the context window of custom-provider models and falls back to a small built-in default. Ollama, meanwhile, rejects requests whose token count exceeds the model's effective `num_ctx` (default **4096**) with:
+
+```
+request (N tokens) exceeds the available context size (4096 tokens), try increasing it
+```
+
+When you apply an Ollama route, HCR queries the live Ollama instance (`/api/ps` while the model is loaded, otherwise `/api/show`) and writes the observed context window into the Codex configuration as `model_context_window`. This makes Codex plan against the real budget instead of its default. If the value cannot be observed, HCR writes nothing rather than guessing; raise Ollama's `num_ctx` (e.g. `OLLAMA_CONTEXT_LENGTH` or a `num_ctx` Modelfile parameter) and reapply the route to pick up the larger window. Because HCR sits in the data path, Ollama inference traffic routed through HCR **can now be observed live**: the dashboard shows IDLE → GENERATING during a request, and token usage, latency, and throughput are reported when Ollama reliably provides them.
 
 OpenAI remains **control-plane routing only** in this phase: HCR writes/normalizes the OpenAI route in the Codex configuration, but OpenAI inference traffic is not proxied or monitored by HCR.
 

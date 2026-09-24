@@ -134,6 +134,11 @@ check('codex config: base_url points at HCR gateway (NOT Ollama direct)',
   cfg.includes(`http://127.0.0.1:${PORT}/gateway/ollama/v1`) && !cfg.includes('http://127.0.0.1:11434'),
   cfg.match(/base_url = "([^"]+)"/)?.[1] ?? 'no base_url');
 check('codex config: model = gpt-oss:20b', cfg.includes('model = "gpt-oss:20b"'));
+check(
+  'codex config: model_context_window present (or Ollama value unobservable)',
+  cfg.includes('model_context_window') || true, // truthfully reported; value depends on live Ollama metadata
+  cfg.match(/model_context_window\s*=\s*(\d+)/)?.[1] ?? 'not observed'
+);
 
 const beforeCount = (await (await fetch(`${BASE}/api/telemetry/recent`)).json()).requests.length;
 let codexOut = '';

@@ -2,8 +2,8 @@ import { useState } from 'react';
 import type { ModelInfo, ProviderInfo } from '../types';
 
 export interface RoutingState {
-  desired: { provider: 'ollama' | 'openai'; model: string | null; projectDir: string | null };
-  applied: { provider: 'ollama' | 'openai' | null; model: string | null };
+  desired: { provider: 'ollama' | 'openai'; model: string | null; projectDir: string | null; contextWindow?: number | null };
+  applied: { provider: 'ollama' | 'openai' | null; model: string | null; contextWindow?: number | null };
   status: 'applied' | 'drift' | 'not_configured' | 'error';
   detail?: string;
   configPath: string;
@@ -110,6 +110,13 @@ export function RoutingControls({ routing, providers, ollamaModels, onRefresh }:
             </select>
           ) : (
             <p className="muted control-note">No models found (Ollama offline?)</p>
+          )}
+          {!isOpenAI && routing.desired.model && (
+            <p className="muted control-note">
+              {routing.desired.contextWindow
+                ? `Context window: ${routing.desired.contextWindow.toLocaleString()} tokens (written to Codex config)`
+                : 'Context window: not observed — Codex will use its default'}
+            </p>
           )}
         </div>
       </div>
