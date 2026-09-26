@@ -14,25 +14,31 @@
         font-family: 'Segoe UI', system-ui, sans-serif;
         font-size: 13px;
       }
-      h1 { font-size: 13px; letter-spacing: 1.5px; margin: 0 0 10px; color: #f2f5f9; }
-      .row { display: flex; justify-content: space-between; padding: 5px 0; }
-      .row span:last-child { color: #f2f5f9; font-weight: 600; }
+      header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      header img { width: 20px; height: 20px; }
+      h1 { font-size: 13px; letter-spacing: 1.2px; margin: 0; color: #f2f5f9; font-weight: 700; }
+      .row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; }
+      .row > span:first-child { color: #7d8590; }
+      .row > span:last-child { color: #f2f5f9; font-weight: 600; text-align: right; }
       .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #55606e; margin-right: 6px; }
       .dot.ok { background: #34d399; }
       .dot.warn { background: #fbbf24; }
       .dot.error { background: #f87171; }
+      .label { display: block; margin-top: 12px; color: #7d8590; font-size: 12px; }
       input {
         width: 100%;
+        box-sizing: border-box;
         padding: 8px 10px;
-        margin-top: 8px;
+        margin-top: 6px;
         background: #191d24;
         border: 1px solid #2a2f38;
         border-radius: 6px;
         color: #f2f5f9;
-        font-size: 14px;
-        letter-spacing: 2px;
+        font-size: 15px;
+        letter-spacing: 3px;
         text-transform: uppercase;
       }
+      input:focus { outline: none; border-color: #2563eb; }
       button {
         width: 100%;
         margin-top: 8px;
@@ -47,33 +53,48 @@
       button.secondary { background: #2a2f38; }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
       .hint { margin-top: 10px; color: #7d8590; font-size: 11px; line-height: 1.5; }
-      .error { color: #f87171; margin-top: 8px; font-size: 12px; }
+      .error { color: #f87171; margin-top: 8px; font-size: 12px; line-height: 1.4; }
+      .success { color: #34d399; margin-top: 8px; font-size: 12px; line-height: 1.4; }
       .hidden { display: none; }
+      hr { border: none; border-top: 1px solid #22262e; margin: 10px 0; }
     </style>
   </head>
   <body>
-    <h1>HCR BROWSER COMPANION</h1>
+    <header>
+      <img src="icons/icon32.png" alt="" />
+      <h1>HCR Browser Companion</h1>
+    </header>
 
-    <div class="row"><span>Status</span><span id="statusText">…</span></div>
-    <div class="row"><span>ChatGPT Web</span><span id="chatgptText">…</span></div>
+    <div class="row"><span>HCR Server</span><span id="serverText">127.0.0.1:7876</span></div>
+    <div class="row"><span>Connection</span><span id="connectionText">…</span></div>
+    <div class="row"><span>Pairing</span><span id="pairingText">…</span></div>
+    <div class="row"><span>ChatGPT</span><span id="chatgptText">…</span></div>
     <div class="row"><span>Last heartbeat</span><span id="heartbeatText">—</span></div>
 
+    <hr />
+
     <div id="pairSection" class="hidden">
-      <input id="pairCode" type="text" placeholder="PAIRING CODE" maxlength="16" autocomplete="off" />
-      <button id="pairButton">Pair with HCR</button>
+      <label class="label" for="pairCode">Pairing Code</label>
+      <input id="pairCode" type="text" placeholder="XXXXXXXX" maxlength="16" autocomplete="off" spellcheck="false" />
+      <button id="pairButton">Pair</button>
       <p class="hint">
-        Generate the pairing code in HCR: Settings → Browser Companion → Generate Pairing Code.
-        The code is single-use and expires in 10 minutes.
+        Get the 8-character code in HCR: Automation → Browser Companion →
+        Generate Pairing Code. It is single-use and expires after 10 minutes.
       </p>
     </div>
 
     <div id="pairedSection" class="hidden">
-      <button id="refreshButton" class="secondary">Refresh Status</button>
-      <button id="unpairButton" class="secondary">Unpair</button>
+      <button id="testButton">Test Connection</button>
+      <button id="unpairButton" class="secondary">Unpair / Reset</button>
     </div>
 
+    <div id="testResult" class="success hidden"></div>
     <div id="errorText" class="error hidden"></div>
-    <p class="hint">Connects only to local HCR (127.0.0.1:7876). No cookies or credentials are read.</p>
+
+    <p class="hint">
+      Talks only to local HCR (127.0.0.1:7876) and https://chatgpt.com.
+      No ChatGPT credentials, cookies or session storage are read or stored.
+    </p>
 
     <script src="popup.js"></script>
   </body>

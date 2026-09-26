@@ -1,54 +1,88 @@
-import { type PopupStatus } from './shared.js';
+import { type PopupActionResult, type PopupStatus, type PopupTestResult } from './shared.js';
 
-const statusText = document.getElementById('statusText') as HTMLSpanElement;
+const serverText = document.getElementById('serverText') as HTMLSpanElement;
+const connectionText = document.getElementById('connectionText') as HTMLSpanElement;
+const pairingText = document.getElementById('pairingText') as HTMLSpanElement;
 const chatgptText = document.getElementById('chatgptText') as HTMLSpanElement;
 const heartbeatText = document.getElementById('heartbeatText') as HTMLSpanElement;
 const pairSection = document.getElementById('pairSection') as HTMLDivElement;
 const pairedSection = document.getElementById('pairedSection') as HTMLDivElement;
 const pairCode = document.getElementById('pairCode') as HTMLInputElement;
 const pairButton = document.getElementById('pairButton') as HTMLButtonElement;
-const refreshButton = document.getElementById('refreshButton') as HTMLButtonElement;
+const testButton = document.getElementById('testButton') as HTMLButtonElement;
 const unpairButton = document.getElementById('unpairButton') as HTMLButtonElement;
+const testResult = document.getElementById('testResult') as HTMLDivElement;
 const errorText = document.getElementById('errorText') as HTMLDivElement;
 
-function setError(message: string | null): void {
-  if (!message) {
-    errorText.classList.add('hidden');
-    errorText.textContent = '';
-    return;
-  }
-  errorText.textContent = message;
-  errorText.classList.remove('hidden');
+const FALLBACK_STATUS: PopupStatus = {
+  paired: false,
+  connected: false,
+  lastHeartbeatAt: null,
+  chatgptState: 'unknown',
+  busy: false,
+};
+
+interface BackgroundReply<T> {
+  value?: T;
+  error?: string;
 }
 
-function describeChatgpt(state: PopupStatus['chatgptState']): string {
-  switch (state) {
-    case 'ready':
-      return 'Ready';
-    case 'auth_required':
-      return 'Authentication Required';
-    case 'tab_not_found':
-      return 'Tab Not Found';
-    case 'error':
-      return 'Error';
-    default:
-      return 'Unknown';
-  }
-}
-
-async function requestStatus(): Promise<PopupStatus> {
-  return await new Promise<PopupStatus>((resolve) => {
-    chrome.runtime.sendMessage({ type: 'HCR_POPUP_STATUS' }, (response: PopupStatus) => {
-      resolve(
-        response ?? { paired: false, connected: false, lastHeartbeatAt: null, chatgptState: 'unknown', busy: false }
-      );
-    });
+/**
+ * Message the background service worker. `chrome.runtime.lastError` is always
+ * read so the popup console stays free of "Unchecked runtime.lastError".
+ */
+function sendToBackground<T>(message: Record<string, unknown>): Promise<BackgroundReply<T>> {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response: T) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          resolve({ error: lastError.message ?? 'The extension background worker is not responding.' });
+          return;
+        }
+        resolve({ value: response });
+      });
+    } catch (error) {
+      resolve({ error: error instanceof Error ? error.message : 'The extension background worker is not responding.' });
+    }
   });
 }
 
+function setError(message: string | null): void {
+  errorText.textContent = message ?? '';
+  errorText.classList.toggle('hidden', !message);
+}
+
+function setInfo(message: string | null): void {
+  testResult.textContent = message ?? '';
+  testResult.classList.toggle('hidden', !message);
+}
+
+function setStatusText(element: HTMLSpanElement, text: string, tone: 'ok' | 'warn' | 'none'): void {
+  const dot = tone === 'none' ? '' : `<span class="dot ${tone}"></span>`;
+  element.innerHTML = `${dot}${text}`;
+}
+
+function describeChatgpt(state: PopupStatus['chatgptState']): { text: string; tone: 'ok' | 'warn' | 'none' } {
+  switch (state) {
+    case 'ready':
+      return { text: 'Ready', tone: 'ok' };
+    case 'auth_required':
+      return { text: 'Authentication Required', tone: 'warn' };
+    case 'tab_not_found':
+      return { text: 'Tab Not Found', tone: 'warn' };
+    case 'error':
+      return { text: 'Error', tone: 'warn' };
+    default:
+      return { text: 'Unknown', tone: 'none' };
+  }
+}
+
 function render(status: PopupStatus): void {
-  statusText.textContent = status.paired ? (status.busy ? 'Working…' : 'Paired') : 'Not Paired';
-  chatgptText.textContent = describeChatgpt(status.chatgptState);
+  setStatusText(connectionText, status.connected ? 'Connected' : 'Not Connected', status.connected ? 'ok' : 'warn');
+  setStatusText(pairingText, status.paired ? 'Paired' : 'Not Paired', status.paired ? 'ok' : 'warn');
+  const chatgpt = describeChatgpt(status.chatgptState);
+  setStatusText(chatgptText, chatgpt.text, chatgpt.tone);
   heartbeatText.textContent = status.lastHeartbeatAt
     ? new Date(status.lastHeartbeatAt).toLocaleTimeString()
     : '—';
@@ -57,8 +91,9 @@ function render(status: PopupStatus): void {
 }
 
 async function refresh(): Promise<void> {
-  const status = await requestStatus();
-  render(status);
+  const { value, error } = await sendToBackground<PopupStatus>({ type: 'HCR_POPUP_STATUS' });
+  render(value ?? FALLBACK_STATUS);
+  if (error) setError(error);
 }
 
 pairButton.addEventListener('click', () => {
@@ -68,30 +103,67 @@ pairButton.addEventListener('click', () => {
     return;
   }
   setError(null);
+  setInfo(null);
   pairButton.disabled = true;
-  chrome.runtime.sendMessage({ type: 'HCR_POPUP_PAIR', code }, (response: { ok?: boolean; error?: string }) => {
+  void (async () => {
+    const { value, error } = await sendToBackground<PopupActionResult>({ type: 'HCR_POPUP_PAIR', code });
     pairButton.disabled = false;
-    if (response?.ok) {
-      pairCode.value = '';
-      void refresh();
-    } else {
-      setError(response?.error ?? 'Pairing failed.');
+    if (error) {
+      setError(error);
+      return;
     }
-  });
+    if (value?.ok) {
+      pairCode.value = '';
+      setInfo('Paired with HCR. Heartbeats are running.');
+      await refresh();
+      return;
+    }
+    setError(value?.error ?? 'Pairing failed.');
+  })();
 });
 
-refreshButton.addEventListener('click', () => {
-  void refresh();
+testButton.addEventListener('click', () => {
+  setError(null);
+  setInfo(null);
+  testButton.disabled = true;
+  void (async () => {
+    const { value, error } = await sendToBackground<PopupTestResult>({ type: 'HCR_POPUP_TEST' });
+    testButton.disabled = false;
+    if (error) {
+      setError(error);
+      return;
+    }
+    if (value?.ok) {
+      const seen = value.lastSeenAt ? new Date(value.lastSeenAt).toLocaleTimeString() : 'never';
+      setInfo(
+        `HCR reachable · ${value.paired ? 'paired' : 'not paired'} · last seen ${seen} · ${
+          value.queuedTasks ?? 0
+        } queued task(s)`
+      );
+      await refresh();
+      return;
+    }
+    setError(value?.error ?? 'Could not reach HCR.');
+  })();
 });
 
 unpairButton.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'HCR_POPUP_UNPAIR' }, () => {
-    void refresh();
-  });
+  setError(null);
+  setInfo(null);
+  void (async () => {
+    const { error } = await sendToBackground<PopupActionResult>({ type: 'HCR_POPUP_UNPAIR' });
+    if (error) {
+      setError(error);
+      return;
+    }
+    setInfo('Unpaired. Generate a new pairing code in HCR to pair again.');
+    await refresh();
+  })();
 });
 
 pairCode.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') pairButton.click();
 });
 
+serverText.textContent = '127.0.0.1:7876';
 void refresh();

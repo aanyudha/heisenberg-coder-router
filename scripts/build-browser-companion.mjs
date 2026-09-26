@@ -7,7 +7,8 @@
  *
  * Output:
  *   apps/browser-companion/dist/                     (load-unpacked folder)
- *   apps/browser-companion/hcr-browser-companion.zip (download artifact)
+ *   apps/browser-companion/hcr-browser-companion.zip (download artifact - the
+ *       extension files sit at the zip root, no nested dist/ folder)
  */
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
@@ -23,7 +24,6 @@ const extRoot = join(repoRoot, 'apps', 'browser-companion');
 const srcRoot = join(extRoot, 'src');
 const distRoot = join(extRoot, 'dist');
 const zipPath = join(extRoot, 'hcr-browser-companion.zip');
-const ZIP_ROOT_FOLDER = 'hcr-browser-companion';
 
 async function bundle() {
   await rm(distRoot, { recursive: true, force: true });
@@ -58,6 +58,16 @@ async function bundle() {
   for (const file of ['manifest.json', 'popup.html']) {
     const content = await readFile(join(extRoot, file));
     await writeFile(join(distRoot, file), content);
+  }
+
+  // Toolbar/popup icons (static PNG assets referenced by manifest.json).
+  const iconsRoot = join(extRoot, 'icons');
+  if (existsSync(iconsRoot)) {
+    const iconsDist = join(distRoot, 'icons');
+    await mkdir(iconsDist, { recursive: true });
+    for (const name of await readdir(iconsRoot)) {
+      await writeFile(join(iconsDist, name), await readFile(join(iconsRoot, name)));
+    }
   }
 }
 
@@ -175,7 +185,7 @@ async function packageZip() {
   for (const file of files) {
     const rel = relative(distRoot, file).split('\\').join('/');
     entries.push({
-      name: `${ZIP_ROOT_FOLDER}/${rel}`,
+      name: rel,
       data: await readFile(file),
     });
   }

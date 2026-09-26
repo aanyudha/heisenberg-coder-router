@@ -69,6 +69,20 @@ export interface PopupStatus {
   busy: boolean;
 }
 
+/** background -> popup acknowledgement for an action request. */
+export interface PopupActionResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** background -> popup response for HCR_POPUP_TEST (real HCR round trip). */
+export interface PopupTestResult extends PopupActionResult {
+  connected?: boolean;
+  paired?: boolean;
+  lastSeenAt?: string | null;
+  queuedTasks?: number;
+}
+
 export async function hcrFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set('content-type', 'application/json');

@@ -298,6 +298,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })();
     return true;
   }
+  if (kind === 'HCR_POPUP_TEST') {
+    void (async () => {
+      const token = state.token ?? (await loadToken());
+      if (!token) {
+        sendResponse({
+          ok: false,
+          error: 'Not paired with HCR. Generate a pairing code in HCR and pair first.',
+        });
+        return;
+      }
+      try {
+        const response = await hcrFetchAuthed('/api/browser-companion/test', token, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) {
+          const body = (await response.json().catch(() => ({}))) as { error?: string };
+          sendResponse({ ok: false, error: body.error ?? `Connection test failed (${response.status})` });
+          return;
+        }
+        const payload = (await response.json()) as {
+          connected?: boolean;
+          paired?: boolean;
+          lastSeenAt?: string | null;
+          queuedTasks?: number;
+        };
+        sendResponse({
+          ok: true,
+          connected: payload.connected,
+          paired: payload.paired,
+          lastSeenAt: payload.lastSeenAt,
+          queuedTasks: payload.queuedTasks,
+        });
+      } catch {
+        sendResponse({ ok: false, error: 'Could not reach HCR at 127.0.0.1:7876. Is the HCR server running?' });
+      }
+    })();
+    return true;
+  }
   if (kind === 'HCR_POPUP_UNPAIR') {
     void (async () => {
       await chrome.storage.local.remove(STORAGE_TOKEN_KEY);
