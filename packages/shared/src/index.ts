@@ -161,7 +161,14 @@ export function pathExists(path: string): boolean {
   return existsSync(path);
 }
 
+/**
+ * HCR data directory (SQLite, local-only artifacts).
+ * HCR_DATA_DIR overrides the location - used by tests to avoid touching the
+ * real data/router.sqlite.
+ */
 export function getDataDir(): string {
+  const override = process.env.HCR_DATA_DIR?.trim();
+  if (override && override.length > 0) return resolve(override);
   return join(getRepoRoot(), 'data');
 }
 

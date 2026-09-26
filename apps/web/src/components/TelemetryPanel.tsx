@@ -1,8 +1,9 @@
 import { TelemetryTile } from './TelemetryTile';
 import { TelemetryEngineUnavailableReason } from '../telemetryReason';
+import type { TelemetrySourceLike } from '../types';
 
 export interface TelemetryLike {
-  source: 'hcr' | 'ollama' | 'codex' | 'provider' | 'unavailable';
+  source: TelemetrySourceLike;
   provider: string | null;
   model: string | null;
   inputTokens?: number | null;
@@ -18,7 +19,8 @@ export interface TelemetryLike {
   observedAt?: string;
 }
 
-const SOURCE_LABEL: Record<TelemetryLike['source'], string> = {
+const SOURCE_LABEL: Record<TelemetrySourceLike, string> = {
+  'hcr-gateway': 'HCR gateway',
   hcr: 'HCR observed',
   ollama: 'Ollama runtime',
   codex: 'Codex telemetry',

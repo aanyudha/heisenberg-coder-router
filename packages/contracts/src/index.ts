@@ -183,6 +183,115 @@ export interface TelemetrySnapshot {
   observedAt?: string;
 }
 
+// ---- Web Handoff (ChatGPT Web intelligence source) ----
+
+/** Versioned patch contract returned by ChatGPT Web through the companion. */
+export const HCR_PATCH_VERSION = 'HCR_PATCH_V1';
+
+/** Phase 1 patch actions. No shell commands, ever. */
+export type HcrPatchAction = 'create' | 'replace' | 'delete';
+
+export interface HcrPatchFile {
+  path: string;
+  action: HcrPatchAction;
+  /** Full new file content for create/replace. Ignored for delete. */
+  content?: string;
+}
+
+export interface HcrPatchV1 {
+  version: typeof HCR_PATCH_VERSION;
+  summary: string;
+  files: HcrPatchFile[];
+}
+
+/**
+ * Web Handoff lifecycle.
+ *
+ * context_ready  - project context prepared, waiting for explicit Send
+ * waiting_*      - companion task queued / ChatGPT interaction in progress
+ * ready_for_review - valid HCR_PATCH_V1, awaiting explicit Apply
+ */
+export type WebHandoffStatus =
+  | 'context_ready'
+  | 'waiting_for_browser'
+  | 'opening_chatgpt'
+  | 'sending_prompt'
+  | 'waiting_for_response'
+  | 'receiving_response'
+  | 'validating_patch'
+  | 'ready_for_review'
+  | 'invalid_patch_response'
+  | 'applied'
+  | 'reverted'
+  | 'rejected'
+  | 'error';
+
+/** Stages the browser companion can report while driving ChatGPT Web. */
+export type CompanionStage = Exclude<
+  WebHandoffStatus,
+  'context_ready' | 'ready_for_review' | 'invalid_patch_response' | 'applied' | 'reverted' | 'rejected' | 'error'
+>;
+
+/** Outcome reported by the browser companion for a queued handoff task. */
+export type CompanionTaskResult =
+  | { status: 'OK'; responseText: string }
+  | { status: 'AUTH_REQUIRED' | 'NO_TAB' | 'TIMEOUT' | 'ERROR'; message?: string };
+
+export interface ContextFileInfo {
+  path: string;
+  bytes: number;
+  selected: 'required' | 'user' | 'auto';
+}
+
+export interface ContextExclusionInfo {
+  path: string;
+  reason: string;
+}
+
+/** Summary of the project context being prepared (privacy review payload). */
+export interface ProjectContextSummary {
+  projectName: string;
+  projectRoot: string;
+  fileCount: number;
+  totalBytes: number;
+  files: ContextFileInfo[];
+  excluded: ContextExclusionInfo[];
+  tree: string[];
+  limits: { maxFiles: number; maxBytesPerFile: number; maxTotalBytes: number };
+}
+
+export interface WebHandoffSummary {
+  id: string;
+  project: string;
+  projectName: string;
+  taskTitle: string;
+  status: WebHandoffStatus;
+  source: 'chatgpt-web';
+  summary: string | null;
+  filesChanged: number;
+  createdAt: string;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface CompanionStatus {
+  /** HCR cannot know an extension exists before it ever contacts HCR. */
+  installed: null;
+  installedState: 'unknown';
+  connected: boolean;
+  lastSeenAt: string | null;
+  paired: boolean;
+  provider: 'chatgpt-web';
+  /** ChatGPT Web state as last reported by the companion. */
+  chatgpt: {
+    state: 'ready' | 'auth_required' | 'tab_not_found' | 'unknown' | 'error';
+    detail: string | null;
+    reportedAt: string | null;
+  };
+  pairingReady: boolean;
+  pairingExpiresAt: string | null;
+}
+
 /** Metadata-only record of one observed gateway request (no content). */
 export interface RecentRequest {
   requestId: string;

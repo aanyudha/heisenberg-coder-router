@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build -w @heisenberg/contracts -w @heisenberg/shared -w @heisenberg/providers -w @heisenberg/core && npm run dev --workspace=apps/api",
-    "build": "npm run build -w @heisenberg/contracts && npm run build -w @heisenberg/shared && npm run build -w @heisenberg/providers && npm run build -w @heisenberg/core && npm run build -w @heisenberg/web && npm run build -w @heisenberg/api",
+    "build": "npm run build -w @heisenberg/contracts && npm run build -w @heisenberg/shared && npm run build -w @heisenberg/providers && npm run build -w @heisenberg/core && npm run build -w @heisenberg/web && npm run build -w @heisenberg/api && npm run build:companion",
+    "build:companion": "node scripts/build-browser-companion.mjs",
     "start": "node apps/api/dist/index.js",
-    "typecheck": "npm run typecheck -w @heisenberg/contracts && npm run typecheck -w @heisenberg/shared && npm run typecheck -w @heisenberg/providers && npm run typecheck -w @heisenberg/core && npm run typecheck -w @heisenberg/web && npm run typecheck -w @heisenberg/api"
+    "typecheck": "npm run typecheck -w @heisenberg/contracts && npm run typecheck -w @heisenberg/shared && npm run typecheck -w @heisenberg/providers && npm run typecheck -w @heisenberg/core && npm run typecheck -w @heisenberg/web && npm run typecheck -w @heisenberg/api && npm run typecheck -w @heisenberg/browser-companion",
+    "test": "npm run build && node --test \"tests/*.test.js\""
   },
   "workspaces": [
     "packages/*",

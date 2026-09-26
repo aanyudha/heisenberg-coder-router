@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>HCR Browser Companion</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 14px;
+        background: #12151b;
+        color: #cdd3dc;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        font-size: 13px;
+      }
+      h1 { font-size: 13px; letter-spacing: 1.5px; margin: 0 0 10px; color: #f2f5f9; }
+      .row { display: flex; justify-content: space-between; padding: 5px 0; }
+      .row span:last-child { color: #f2f5f9; font-weight: 600; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #55606e; margin-right: 6px; }
+      .dot.ok { background: #34d399; }
+      .dot.warn { background: #fbbf24; }
+      .dot.error { background: #f87171; }
+      input {
+        width: 100%;
+        padding: 8px 10px;
+        margin-top: 8px;
+        background: #191d24;
+        border: 1px solid #2a2f38;
+        border-radius: 6px;
+        color: #f2f5f9;
+        font-size: 14px;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+      button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 9px;
+        background: #2563eb;
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary { background: #2a2f38; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .hint { margin-top: 10px; color: #7d8590; font-size: 11px; line-height: 1.5; }
+      .error { color: #f87171; margin-top: 8px; font-size: 12px; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>HCR BROWSER COMPANION</h1>
+
+    <div class="row"><span>Status</span><span id="statusText">…</span></div>
+    <div class="row"><span>ChatGPT Web</span><span id="chatgptText">…</span></div>
+    <div class="row"><span>Last heartbeat</span><span id="heartbeatText">—</span></div>
+
+    <div id="pairSection" class="hidden">
+      <input id="pairCode" type="text" placeholder="PAIRING CODE" maxlength="16" autocomplete="off" />
+      <button id="pairButton">Pair with HCR</button>
+      <p class="hint">
+        Generate the pairing code in HCR: Settings → Browser Companion → Generate Pairing Code.
+        The code is single-use and expires in 10 minutes.
+      </p>
+    </div>
+
+    <div id="pairedSection" class="hidden">
+      <button id="refreshButton" class="secondary">Refresh Status</button>
+      <button id="unpairButton" class="secondary">Unpair</button>
+    </div>
+
+    <div id="errorText" class="error hidden"></div>
+    <p class="hint">Connects only to local HCR (127.0.0.1:7876). No cookies or credentials are read.</p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "@heisenberg/browser-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HCR Browser Companion - optional Chrome/Edge (MV3) extension for Web Handoff",
+  "scripts": {
+    "build": "node ../../scripts/build-browser-companion.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.0",
+    "typescript": "^5.7.0"
+  }
+}

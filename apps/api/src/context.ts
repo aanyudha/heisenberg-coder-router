@@ -1,4 +1,20 @@
-import { DatabaseEngine, OllamaEngine, CodexEngine, ProviderEngine, ProjectEngine, ModelEngine, CodexConfigEngine, RoutingEngine, TelemetryEngine, GatewayEngine } from '@heisenberg/core';
+import {
+  BrowserCompanionEngine,
+  CodexConfigEngine,
+  CodexEngine,
+  DatabaseEngine,
+  GatewayEngine,
+  ModelEngine,
+  OllamaEngine,
+  ProjectContextEngine,
+  ProjectEngine,
+  ProviderEngine,
+  RoutingEngine,
+  TelemetryEngine,
+  PatchValidationEngine,
+  WebHandoffEngine,
+  WorkspaceApplyEngine,
+} from '@heisenberg/core';
 import type { RouteProvider } from '@heisenberg/contracts';
 
 export interface AppContext {
@@ -11,6 +27,9 @@ export interface AppContext {
   routing: RoutingEngine;
   telemetry: TelemetryEngine;
   gateway: GatewayEngine;
+  /** Optional Web Handoff feature set (ChatGPT Web intelligence source). */
+  companion: BrowserCompanionEngine;
+  webHandoff: WebHandoffEngine;
 }
 
 export function createContext(): AppContext {
@@ -34,7 +53,29 @@ export function createContext(): AppContext {
   }));
   telemetry.setGateway(gateway);
 
-  return { db, ollama, codex, providers, projects, models, routing, telemetry, gateway };
+  // Web Handoff: context -> prompt -> companion -> patch -> apply.
+  const contextEngine = new ProjectContextEngine();
+  const patchValidator = new PatchValidationEngine();
+  const applyEngine = new WorkspaceApplyEngine(patchValidator);
+  const companion = new BrowserCompanionEngine(db);
+  const webHandoff = new WebHandoffEngine(db, contextEngine, applyEngine, companion);
+  companion.setResultHandler((handoffId, taskId, result) =>
+    webHandoff.handleResult(handoffId, taskId, result)
+  );
+
+  return {
+    db,
+    ollama,
+    codex,
+    providers,
+    projects,
+    models,
+    routing,
+    telemetry,
+    gateway,
+    companion,
+    webHandoff,
+  };
 }
 
 const KEY_PROVIDER = 'active_provider';
@@ -67,6 +108,8 @@ export function loadSettings(ctx: AppContext): void {
     });
     ctx.routing.setDesired({ projectDir });
   }
+  // First use: create the local Browser Companion pairing secret.
+  ctx.companion.ensureSecret();
 }
 
 export function saveDesiredRoute(
