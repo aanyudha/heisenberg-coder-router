@@ -4,6 +4,8 @@ import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { AppError } from '@heisenberg/shared';
 import type {
+  ChatgptDestination,
+  ChatgptSessionRef,
   CompanionStage,
   CompanionTaskResult,
   HcrPatchV1,
@@ -17,6 +19,7 @@ import type { ProjectContext, ProjectContextEngine } from './project-context-eng
 import type { PatchPathIssue } from './patch-validation-engine.js';
 import { CORRECTION_PROMPT, parseHcrPatch } from './patch-schema.js';
 import type { WorkspaceApplyEngine, ApplyOutcome } from './workspace-apply-engine.js';
+import { ChatgptDestinationEngine, chatgptProjectIdFromUrl } from './chatgpt-destination-engine.js';
 import { diffLines, type FileDiff } from './diff-engine.js';
 
 /** Maximum patch size persisted in SQLite (local-only, for review/revert). */
@@ -52,6 +55,20 @@ export interface PrepareInput {
   projectDir: string;
   selectedFiles?: string[];
 }
+
+/** Optional targeting passed together with an explicit Send. */
+export interface SendInput {
+  destination?: ChatgptDestination | null;
+}
+
+/** Human-readable failure text for the deterministic targeting error codes. */
+const TARGETING_ERRORS: Record<string, string> = {
+  PROJECT_NOT_FOUND:
+    'PROJECT_NOT_FOUND: the selected ChatGPT Project could not be found. Refresh Projects and select a current one.',
+  CHAT_NOT_FOUND:
+    'CHAT_NOT_FOUND: the selected chat session could not be found in that ChatGPT Project. Refresh Sessions and select a current one.',
+  UI_UNSUPPORTED: 'UI_UNSUPPORTED: the ChatGPT page could not be understood (ChatGPT UI changed).',
+};
 
 /** Prompt contract sent to ChatGPT Web through the Browser Companion. */
 export function buildHandoffPrompt(context: ProjectContext, task: string): string {
@@ -115,13 +132,22 @@ export class WebHandoffEngine {
   private rawResponses = new Map<string, string>();
   private stageByHandoff = new Map<string, CompanionStage>();
   private pendingByHandoff = new Map<string, string>(); // handoffId -> taskId
+  /** Local project -> last-used ChatGPT Project/session mapping. */
+  private readonly destinations: ChatgptDestinationEngine;
 
   constructor(
     private readonly db: DatabaseEngine,
     private readonly contextEngine: ProjectContextEngine,
     private readonly applyEngine: WorkspaceApplyEngine,
     private readonly companion: BrowserCompanionEngine
-  ) {}
+  ) {
+    this.destinations = new ChatgptDestinationEngine(db);
+  }
+
+  /** Restore the last-used ChatGPT destination for a local HCR project. */
+  destinationFor(localProjectPath: string): ChatgptDestination | null {
+    return this.destinations.get(localProjectPath);
+  }
 
   /** Step 1: prepare (never sends anything) - build reviewable context. */
   async prepare(input: PrepareInput): Promise<WebHandoffDetail> {
@@ -156,13 +182,14 @@ export class WebHandoffEngine {
       error: null,
       createdAt: now,
       completedAt: null,
+      destinationJson: null,
     });
 
     return this.detail(id, { task, context });
   }
 
   /** Step 2: explicit Send - queue the prepared prompt for the companion. */
-  async send(id: string): Promise<WebHandoffDetail> {
+  async send(id: string, input: SendInput = {}): Promise<WebHandoffDetail> {
     const record = this.requireRecord(id);
     const taskId = this.pendingByHandoff.get(id);
     const taskPending = taskId ? this.companion.hasTask(taskId) : false;
@@ -174,6 +201,8 @@ export class WebHandoffEngine {
       throw new AppError(`Handoff ${id} cannot be sent (status: ${record.status}).`, 409);
     }
 
+    const destination = normalizeDestination(input.destination);
+
     const context = this.contexts.get(id) ?? (await this.rebuildContext(record));
     if (context) this.contexts.set(id, context);
 
@@ -182,10 +211,15 @@ export class WebHandoffEngine {
       ? buildHandoffPrompt(context, taskText)
       : `Project: ${record.projectName}\n\nTask:\n${taskText}\n\nReturn ONLY valid HCR_PATCH_V1 JSON.`;
 
-    const queued = this.companion.queueTask({ handoffId: id, prompt });
+    const queued = this.companion.queueTask({ handoffId: id, prompt, destination });
     this.pendingByHandoff.set(id, queued.id);
     this.stageByHandoff.set(id, 'waiting_for_browser');
-    this.db.updateWebHandoff(id, { error: null, completedAt: null });
+    this.db.updateWebHandoff(id, {
+      error: null,
+      completedAt: null,
+      destinationJson: destination ? JSON.stringify(destination) : record.destinationJson,
+    });
+    if (destination) this.rememberDestination(record.projectPath, destination, null);
     this.setStatus(id, 'waiting_for_browser');
 
     return await this.detail(id, { task: taskText, context });
@@ -209,7 +243,9 @@ export class WebHandoffEngine {
       truncate(previous, 4000),
     ].join('\n');
 
-    const queued = this.companion.queueTask({ handoffId: id, prompt });
+    // Retries keep the originally selected destination (deterministic).
+    const destination = readDestination(record);
+    const queued = this.companion.queueTask({ handoffId: id, prompt, destination });
     this.pendingByHandoff.set(id, queued.id);
     this.stageByHandoff.set(id, 'waiting_for_browser');
     this.db.updateWebHandoff(id, { error: null, completedAt: null });
@@ -245,10 +281,13 @@ export class WebHandoffEngine {
     this.stageByHandoff.delete(handoffId);
 
     if (result.status !== 'OK') {
+      const targeting = TARGETING_ERRORS[result.status];
       const message =
         result.status === 'AUTH_REQUIRED'
           ? 'Open ChatGPT and sign in, then retry.'
-          : (result.message ?? `Browser companion reported ${result.status}.`);
+          : targeting
+            ? `${targeting}${result.message ? ` ${result.message}` : ''}`
+            : (result.message ?? `Browser companion reported ${result.status}.`);
       this.db.updateWebHandoff(handoffId, {
         status: result.status === 'AUTH_REQUIRED' ? 'waiting_for_browser' : 'error',
         error: message,
@@ -264,6 +303,12 @@ export class WebHandoffEngine {
     const raw = result.responseText ?? '';
     this.rawResponses.set(handoffId, raw);
     this.setStatus(handoffId, 'validating_patch');
+
+    // The session actually used (or created) becomes the preferred mapping.
+    const destination = readDestination(record);
+    if (destination) {
+      this.rememberDestination(record.projectPath, destination, result.session ?? null);
+    }
 
     const parsed = parseHcrPatch(raw);
     if (!parsed.ok || !parsed.patch) {
@@ -389,6 +434,32 @@ export class WebHandoffEngine {
     const record = this.db.getWebHandoff(id);
     if (!record) throw new AppError(`Web Handoff ${id} not found`, 404);
     return record;
+  }
+
+  /**
+   * Remember the destination used for a local project (last-used restore).
+   * On a successful result the actual session wins - in create mode that is
+   * the newly created chat, which becomes the preferred session from now on.
+   */
+  private rememberDestination(
+    localProjectPath: string,
+    destination: ChatgptDestination,
+    session: ChatgptSessionRef | null
+  ): void {
+    const prior = this.destinations.get(localProjectPath);
+    const sameProject = prior !== null && prior.chatgptProjectId === destination.chatgptProjectId;
+    const chat = session
+      ? {
+          chatId: session.chatId || null,
+          chatTitle: session.chatTitle || null,
+          chatUrl: session.chatUrl || null,
+        }
+      : destination.chatMode === 'continue'
+        ? { chatId: destination.chatId, chatTitle: destination.chatTitle, chatUrl: destination.chatUrl }
+        : sameProject && prior
+          ? { chatId: prior.chatId, chatTitle: prior.chatTitle, chatUrl: prior.chatUrl }
+          : { chatId: null, chatTitle: null, chatUrl: null };
+    this.destinations.save(localProjectPath, { ...destination, ...chat });
   }
 
   private setStatus(id: string, status: WebHandoffStatus): void {
@@ -529,5 +600,44 @@ function toSummary(record: WebHandoffRecord): WebHandoffSummary {
     createdAt: record.createdAt,
     completedAt: record.completedAt,
     error: record.error,
+    destination: readDestination(record),
+  };
+}
+
+/** Destination metadata stored with the handoff (never credentials). */
+function readDestination(record: WebHandoffRecord): ChatgptDestination | null {
+  if (!record.destinationJson) return null;
+  try {
+    const parsed = JSON.parse(record.destinationJson) as ChatgptDestination | null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Validate + normalize a destination chosen in the UI. */
+function normalizeDestination(destination: ChatgptDestination | null | undefined): ChatgptDestination | null {
+  if (!destination) return null;
+  const projectUrl = (destination.chatgptProjectUrl ?? '').trim();
+  const projectId = (destination.chatgptProjectId ?? '').trim() || (projectUrl ? chatgptProjectIdFromUrl(projectUrl) ?? '' : '');
+  if (projectId.length === 0 && projectUrl.length === 0) {
+    throw new AppError('Select a ChatGPT Project before sending.', 400);
+  }
+  const chatMode: ChatgptDestination['chatMode'] = destination.chatMode === 'create' ? 'create' : 'continue';
+  const chatId = (destination.chatId ?? '').trim() || null;
+  const chatUrl = (destination.chatUrl ?? '').trim() || null;
+  const chatTitle = (destination.chatTitle ?? '').trim() || null;
+  if (chatMode === 'continue' && !chatId && !chatUrl) {
+    throw new AppError('Select a chat session (or switch to Create New Session) before sending.', 400);
+  }
+  return {
+    chatgptProjectId: projectId,
+    chatgptProjectName: (destination.chatgptProjectName ?? '').trim(),
+    chatgptProjectUrl: projectUrl,
+    chatId,
+    chatTitle,
+    chatUrl,
+    chatMode,
+    newChatTitle: (destination.newChatTitle ?? '').trim() || null,
   };
 }

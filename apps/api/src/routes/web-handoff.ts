@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { ProjectContextSummary, WebHandoffSummary } from '@heisenberg/contracts';
+import type { ChatgptDestination, ProjectContextSummary, WebHandoffSummary } from '@heisenberg/contracts';
 import type { AppContext } from '../context.js';
 import type { WebHandoffDetail } from '@heisenberg/core';
 import { AppError } from '@heisenberg/shared';
@@ -53,9 +53,11 @@ export async function registerWebHandoffRoutes(app: FastifyInstance, context: Ap
   });
 
   // Explicit send: queue the prompt for the Browser Companion.
+  // Optional `destination` targets one ChatGPT Project + session (§ targeting).
   app.post('/api/web-handoff/:id/send', async (request): Promise<WebHandoffDetail> => {
     const { id } = request.params as { id: string };
-    return await webHandoff.send(id);
+    const body = (request.body ?? {}) as { destination?: ChatgptDestination | null };
+    return await webHandoff.send(id, { destination: body.destination ?? null });
   });
 
   // Correction prompt after an invalid HCR_PATCH_V1 response.

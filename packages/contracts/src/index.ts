@@ -232,10 +232,92 @@ export type CompanionStage = Exclude<
   'context_ready' | 'ready_for_review' | 'invalid_patch_response' | 'applied' | 'reverted' | 'rejected' | 'error'
 >;
 
-/** Outcome reported by the browser companion for a queued handoff task. */
+/** Failure codes the browser companion can report for a queued task. */
+export type CompanionTaskFailure =
+  | 'AUTH_REQUIRED'
+  | 'NO_TAB'
+  | 'TIMEOUT'
+  | 'ERROR'
+  /** The selected ChatGPT Project could not be found. Never falls back. */
+  | 'PROJECT_NOT_FOUND'
+  /** The selected chat/session could not be found. Never falls back. */
+  | 'CHAT_NOT_FOUND'
+  /** The ChatGPT DOM could not be understood. */
+  | 'UI_UNSUPPORTED';
+
+/**
+ * Outcome reported by the browser companion for a queued task.
+ *
+ * - handoff tasks answer with `responseText` (HCR_PATCH_V1) + the session used
+ * - discovery tasks answer with `projects` / `chats` (metadata only)
+ * - every other status is a deterministic failure code (no silent fallback)
+ */
 export type CompanionTaskResult =
-  | { status: 'OK'; responseText: string }
-  | { status: 'AUTH_REQUIRED' | 'NO_TAB' | 'TIMEOUT' | 'ERROR'; message?: string };
+  | {
+      status: 'OK';
+      responseText?: string;
+      projects?: ChatGptProject[];
+      chats?: ChatGptChat[];
+      session?: ChatgptSessionRef;
+    }
+  | { status: CompanionTaskFailure; message?: string };
+
+// ---- ChatGPT destination targeting (Browser Companion discovery) ----
+
+/** Delivery mode inside the selected ChatGPT Project. */
+export type ChatgptSendMode = 'continue' | 'create';
+
+/** A ChatGPT Project discovered from the signed-in ChatGPT Web UI. */
+export interface ChatGptProject {
+  id: string;
+  name: string;
+  url: string;
+}
+
+/** A chat/session belonging to exactly one ChatGPT Project. */
+export interface ChatGptChat {
+  id: string;
+  title: string;
+  url: string;
+}
+
+/**
+ * Chosen Web Handoff destination: local project -> ChatGPT Project -> session.
+ *
+ * Identity is the URL/id; names are presentation only (they can change).
+ */
+export interface ChatgptDestination {
+  chatgptProjectId: string;
+  chatgptProjectName: string;
+  chatgptProjectUrl: string;
+  chatId: string | null;
+  chatTitle: string | null;
+  chatUrl: string | null;
+  chatMode: ChatgptSendMode;
+  /** Optional title for a newly created session (never authoritative). */
+  newChatTitle?: string | null;
+}
+
+/** Session actually used/created, reported back with an OK handoff result. */
+export interface ChatgptSessionRef {
+  chatgptProjectId: string | null;
+  chatgptProjectName: string | null;
+  chatgptProjectUrl: string | null;
+  chatId: string;
+  chatTitle: string;
+  chatUrl: string;
+  chatMode: ChatgptSendMode;
+}
+
+/** Discovery answer status (metadata only - never conversation contents). */
+export type ChatgptDiscoveryStatus =
+  | 'ok'
+  | 'not_connected'
+  | 'auth_required'
+  | 'ui_unsupported'
+  | 'timeout'
+  | 'no_tab'
+  | 'error';
 
 export interface ContextFileInfo {
   path: string;
@@ -272,6 +354,8 @@ export interface WebHandoffSummary {
   createdAt: string;
   completedAt: string | null;
   error: string | null;
+  /** Where the prompt was (or will be) delivered inside ChatGPT Web. */
+  destination: ChatgptDestination | null;
 }
 
 export interface CompanionStatus {

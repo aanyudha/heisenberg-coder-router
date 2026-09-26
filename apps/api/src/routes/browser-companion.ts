@@ -1,6 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
-import type { CompanionStage, CompanionStatus, CompanionTaskResult } from '@heisenberg/contracts';
+import type {
+  ChatGptChat,
+  ChatGptProject,
+  ChatgptSessionRef,
+  CompanionStage,
+  CompanionStatus,
+  CompanionTaskResult,
+} from '@heisenberg/contracts';
 import type { AppContext } from '../context.js';
 import { AppError } from '@heisenberg/shared';
 
@@ -12,6 +19,11 @@ const STAGES: CompanionStage[] = [
   'waiting_for_response',
   'receiving_response',
 ];
+
+/** `?refresh=1` / `?refresh=true` (Refresh buttons bypass the memory cache). */
+function isRefresh(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
 
 const ALLOWED_ORIGINS = [
   /^chrome-extension:\/\//,
@@ -77,6 +89,40 @@ const STAGE_BODY = {
 } as const;
 
 /** POST /api/browser-companion/task/:id/result -> `{ "status", "responseText"?, "message"?, "chatgptState"? }` */
+const SESSION_REF = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    chatgptProjectId: { type: ['string', 'null'] },
+    chatgptProjectName: { type: ['string', 'null'] },
+    chatgptProjectUrl: { type: ['string', 'null'] },
+    chatId: { type: 'string' },
+    chatTitle: { type: 'string' },
+    chatUrl: { type: 'string' },
+    chatMode: { type: 'string' },
+  },
+} as const;
+
+const PROJECT_ITEM = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string' },
+    name: { type: 'string' },
+    url: { type: 'string' },
+  },
+} as const;
+
+const CHAT_ITEM = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string' },
+    title: { type: 'string' },
+    url: { type: 'string' },
+  },
+} as const;
+
 const RESULT_BODY = {
   nullable: true,
   type: 'object',
@@ -86,8 +132,23 @@ const RESULT_BODY = {
     responseText: { type: 'string' },
     message: { type: 'string' },
     chatgptState: { type: 'string' },
+    projects: { type: 'array', items: PROJECT_ITEM },
+    chats: { type: 'array', items: CHAT_ITEM },
+    session: SESSION_REF,
   },
 } as const;
+
+/** Companion task result statuses accepted by HCR. */
+const RESULT_STATUSES = [
+  'OK',
+  'AUTH_REQUIRED',
+  'NO_TAB',
+  'TIMEOUT',
+  'ERROR',
+  'PROJECT_NOT_FOUND',
+  'CHAT_NOT_FOUND',
+  'UI_UNSUPPORTED',
+] as const;
 
 function tokenFrom(request: FastifyRequest): string | null {
   const header = request.headers[TOKEN_HEADER];
@@ -235,29 +296,66 @@ export async function registerBrowserCompanionRoutes(app: FastifyInstance, conte
       { preValidation: requireToken, schema: { body: RESULT_BODY } },
       async (request) => {
         const { id } = request.params as { id: string };
-        const body = (request.body ?? {}) as { status?: string; responseText?: string; message?: string };
+        const body = (request.body ?? {}) as {
+          status?: string;
+          responseText?: string;
+          message?: string;
+          projects?: ChatGptProject[];
+          chats?: ChatGptChat[];
+          session?: ChatgptSessionRef;
+        };
         const status = body.status;
-        if (
-          status !== 'OK' &&
-          status !== 'AUTH_REQUIRED' &&
-          status !== 'NO_TAB' &&
-          status !== 'TIMEOUT' &&
-          status !== 'ERROR'
-        ) {
-          throw new AppError('status must be OK | AUTH_REQUIRED | NO_TAB | TIMEOUT | ERROR', 400);
+        if (!status || !RESULT_STATUSES.includes(status as (typeof RESULT_STATUSES)[number])) {
+          throw new AppError(`status must be one of: ${RESULT_STATUSES.join(' | ')}`, 400);
         }
         const result: CompanionTaskResult =
           status === 'OK'
-            ? { status: 'OK', responseText: typeof body.responseText === 'string' ? body.responseText : '' }
-            : { status, message: typeof body.message === 'string' ? body.message : undefined };
+            ? {
+                status: 'OK',
+                responseText: typeof body.responseText === 'string' ? body.responseText : '',
+                projects: body.projects,
+                chats: body.chats,
+                session: body.session,
+              }
+            : { status: status as Exclude<CompanionTaskResult, { status: 'OK' }>['status'], message: body.message };
 
         const handoffId = await companion.resolveTask(id, result);
         if (!handoffId) {
-          // Unknown/expired task: acknowledge so the extension can move on.
+          // Unknown/expired task (or a discovery answer): acknowledge so the
+          // extension can move on.
           return { ok: true, handoffId: null, note: 'Task was no longer queued.' };
         }
         return { ok: true, handoffId };
       }
     );
+
+    // ---- ChatGPT destination discovery (metadata only) --------------- //
+    // Discovery reuses the companion task queue: the extension answers with
+    // project/session metadata only - never conversation contents, never
+    // credentials. Successful answers are cached briefly in memory; the
+    // Refresh buttons in the UI pass `?refresh=1` to bypass the cache.
+
+    scope.get('/api/browser-companion/chatgpt/projects', async (request) => {
+      const { refresh } = request.query as { refresh?: string };
+      const answer = await companion.discoverProjects({ refresh: isRefresh(refresh) });
+      return { status: answer.status, projects: answer.projects ?? [], error: answer.error };
+    });
+
+    scope.get('/api/browser-companion/chatgpt/projects/:projectId/chats', async (request) => {
+      const { projectId } = request.params as { projectId: string };
+      const { url, refresh } = request.query as { url?: string; refresh?: string };
+      const answer = await companion.discoverChats(decodeURIComponent(projectId), url ? decodeURIComponent(url) : '', {
+        refresh: isRefresh(refresh),
+      });
+      return { status: answer.status, chats: answer.chats ?? [], error: answer.error };
+    });
+
+    // Last-used destination for one local project (restore on project select).
+    scope.get('/api/browser-companion/chatgpt/destination', async (request) => {
+      const { projectDir } = request.query as { projectDir?: string };
+      const localProjectPath = projectDir?.trim();
+      if (!localProjectPath) throw new AppError('projectDir is required', 400);
+      return { destination: context.webHandoff.destinationFor(localProjectPath) };
+    });
   });
 }

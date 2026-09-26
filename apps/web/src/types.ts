@@ -195,6 +195,62 @@ export interface WebHandoffSummary {
   createdAt: string;
   completedAt: string | null;
   error: string | null;
+  /** ChatGPT Project/session the prompt is (or was) delivered to. */
+  destination: ChatgptDestination | null;
+}
+
+// ---- ChatGPT destination targeting ----
+
+export type ChatgptSendMode = 'continue' | 'create';
+
+/** A ChatGPT Project discovered from the signed-in ChatGPT Web UI. */
+export interface ChatGptProject {
+  id: string;
+  name: string;
+  url: string;
+}
+
+/** A chat/session inside exactly one ChatGPT Project. */
+export interface ChatGptChat {
+  id: string;
+  title: string;
+  url: string;
+}
+
+export interface ChatgptDestination {
+  chatgptProjectId: string;
+  chatgptProjectName: string;
+  chatgptProjectUrl: string;
+  chatId: string | null;
+  chatTitle: string | null;
+  chatUrl: string | null;
+  chatMode: ChatgptSendMode;
+  newChatTitle?: string | null;
+}
+
+export type ChatgptDiscoveryStatus =
+  | 'ok'
+  | 'not_connected'
+  | 'auth_required'
+  | 'ui_unsupported'
+  | 'timeout'
+  | 'no_tab'
+  | 'error';
+
+export interface ChatgptProjectsResponse {
+  status: ChatgptDiscoveryStatus;
+  projects: ChatGptProject[];
+  error: string | null;
+}
+
+export interface ChatgptChatsResponse {
+  status: ChatgptDiscoveryStatus;
+  chats: ChatGptChat[];
+  error: string | null;
+}
+
+export interface ChatgptDestinationResponse {
+  destination: ChatgptDestination | null;
 }
 
 export interface DiffLine {

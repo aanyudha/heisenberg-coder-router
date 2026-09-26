@@ -8,6 +8,8 @@ import {
   hcrFetchAuthed,
   type ChatgptState,
   type CompanionTask,
+  type ContextMessage,
+  type CurrentChatgptContext,
   type Stage,
   type SubmitMessage,
   type SubmitOutcome,
@@ -18,13 +20,18 @@ import {
  *
  * Responsibilities:
  *  - keep a local pairing secret (from the HCR pairing code) in storage
- *  - heartbeat to local HCR and pick up queued Web Handoff tasks
- *  - find/open ChatGPT Web and drive the content script
- *  - return ONLY the final assistant response to HCR
+ *  - heartbeat to local HCR and pick up queued Web Handoff / discovery tasks
+ *  - find/open ChatGPT Web, navigate to the SELECTED destination and drive
+ *    the content script (the adapter owns all DOM work)
+ *  - return ONLY the final assistant response / discovery metadata to HCR
  *
  * The companion never reads cookies, never automates login, never touches
  * unrelated tabs, and never sends the pairing secret anywhere but HCR.
  */
+
+/** Max times the worker will navigate the tab on behalf of the adapter. */
+const MAX_NAVIGATION_ROUNDS = 2;
+const NAVIGATION_SETTLE_MS = 700;
 
 interface CompanionState {
   token: string | null;
@@ -139,24 +146,41 @@ async function postResult(taskId: string, outcome: SubmitOutcome): Promise<void>
   }
 }
 
-/** Find a ChatGPT tab, or open a new one. Never touches other sites. */
-async function findOrOpenChatGptTab(): Promise<{ tabId: number } | { error: 'NO_TAB' }> {
+/** Find an existing ChatGPT tab (never opens one). */
+async function findChatGptTab(): Promise<number | null> {
   const tabs = await chrome.tabs.query({});
   const existing = tabs.find((tab) => typeof tab.url === 'string' && tab.url.startsWith(CHATGPT_ORIGIN));
-  if (existing?.id !== undefined) {
+  return existing?.id !== undefined ? existing.id : null;
+}
+
+/** Find a ChatGPT tab, or open a new one. Never touches other sites. */
+async function findOrOpenChatGptTab(): Promise<{ tabId: number } | { error: 'NO_TAB' }> {
+  const existingId = await findChatGptTab();
+  if (existingId !== null) {
     try {
-      await chrome.tabs.update(existing.id, { active: true });
+      await chrome.tabs.update(existingId, { active: true });
     } catch {
       // Focus is best effort.
     }
-    await waitForTabComplete(existing.id, 15_000);
-    return { tabId: existing.id };
+    await waitForTabComplete(existingId, 15_000);
+    return { tabId: existingId };
   }
 
   const created = await chrome.tabs.create({ url: `${CHATGPT_ORIGIN}/`, active: true });
   if (created.id === undefined) return { error: 'NO_TAB' };
   await waitForTabComplete(created.id, 25_000);
   return { tabId: created.id };
+}
+
+/** Load a specific URL in the tab and wait for it to settle. */
+async function navigateTab(tabId: number, url: string): Promise<void> {
+  try {
+    await chrome.tabs.update(tabId, { url });
+  } catch {
+    // The navigation itself is best effort; verification happens next.
+  }
+  await waitForTabComplete(tabId, 20_000);
+  await new Promise((resolve) => setTimeout(resolve, NAVIGATION_SETTLE_MS));
 }
 
 function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
@@ -180,9 +204,17 @@ function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
 }
 
 async function sendToContent(tabId: number, task: CompanionTask): Promise<SubmitOutcome> {
-  const message: SubmitMessage = { type: 'HCR_SUBMIT', taskId: task.id, prompt: task.prompt };
+  const message: SubmitMessage = {
+    type: 'HCR_SUBMIT',
+    taskId: task.id,
+    prompt: task.prompt,
+    destination: task.destination ?? null,
+  };
+  return await sendToTab(tabId, message);
+}
 
-  // The content script may still be injecting; retry a few times.
+async function sendToTab(tabId: number, message: object): Promise<SubmitOutcome> {
+  // The content script may still be injecting (or reloading); retry a few times.
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -201,42 +233,118 @@ async function sendToContent(tabId: number, task: CompanionTask): Promise<Submit
   };
 }
 
+async function raceWithTimeout(work: Promise<SubmitOutcome>, timeoutMs: number): Promise<SubmitOutcome> {
+  return await Promise.race([
+    work,
+    new Promise<SubmitOutcome>((resolve) =>
+      setTimeout(
+        () => resolve({ status: 'TIMEOUT', message: 'ChatGPT Web did not finish in time.' }),
+        timeoutMs
+      )
+    ),
+  ]);
+}
+
+/**
+ * Drive one Web Handoff task: navigate to the SELECTED destination, verify it,
+ * send the prompt and wait for the assistant. No navigation happens without a
+ * selected destination, and a failed verification is reported as
+ * PROJECT_NOT_FOUND / CHAT_NOT_FOUND - never silently retargeted.
+ */
+async function runHandoffTask(task: CompanionTask): Promise<void> {
+  await postStage(task.id, 'opening_chatgpt');
+  const tab = await findOrOpenChatGptTab();
+  if ('error' in tab) {
+    state.chatgptState = 'tab_not_found';
+    await postResult(task.id, {
+      status: 'NO_TAB',
+      message: 'Open ChatGPT Web in this browser, then retry.',
+      chatgptState: 'tab_not_found',
+    });
+    return;
+  }
+
+  await postStage(task.id, 'sending_prompt');
+  let outcome = await raceWithTimeout(sendToContent(tab.tabId, task), TASK_TIMEOUT_MS);
+
+  // The adapter asks the worker to load the destination first (a reload would
+  // otherwise destroy the message channel mid-flight).
+  let rounds = 0;
+  while (outcome.status === 'NAVIGATE' && typeof outcome.message === 'string' && rounds < MAX_NAVIGATION_ROUNDS) {
+    rounds += 1;
+    await navigateTab(tab.tabId, outcome.message);
+    outcome = await raceWithTimeout(sendToContent(tab.tabId, task), TASK_TIMEOUT_MS);
+  }
+  if (outcome.status === 'NAVIGATE') {
+    outcome =
+      task.destination?.chatMode === 'create'
+        ? {
+            status: 'PROJECT_NOT_FOUND',
+            message: 'PROJECT_NOT_FOUND: the selected ChatGPT Project could not be opened.',
+          }
+        : {
+            status: 'CHAT_NOT_FOUND',
+            message: 'CHAT_NOT_FOUND: the selected chat session could not be opened.',
+          };
+  }
+
+  if (outcome.chatgptState) state.chatgptState = outcome.chatgptState;
+  await postStage(task.id, 'receiving_response');
+  await postResult(task.id, outcome);
+}
+
+/** Discover ChatGPT Projects (metadata only) or sessions of one Project. */
+async function runDiscoveryTask(task: CompanionTask): Promise<void> {
+  await postStage(task.id, 'opening_chatgpt');
+  const tab = await findOrOpenChatGptTab();
+  if ('error' in tab) {
+    state.chatgptState = 'tab_not_found';
+    await postResult(task.id, {
+      status: 'NO_TAB',
+      message: 'Open ChatGPT Web in this browser, then refresh.',
+      chatgptState: 'tab_not_found',
+    });
+    return;
+  }
+
+  if (task.kind === 'discover_chats') {
+    // Sessions can only be listed from inside the selected Project page.
+    const projectUrl =
+      task.projectUrl || (task.projectId ? `${CHATGPT_ORIGIN}/project/${task.projectId}` : '');
+    if (projectUrl) await navigateTab(tab.tabId, projectUrl);
+    const chatsOutcome = await raceWithTimeout(
+      sendToTab(tab.tabId, {
+        type: 'HCR_DISCOVER_CHATS',
+        taskId: task.id,
+        projectId: task.projectId ?? '',
+        projectUrl: task.projectUrl ?? projectUrl,
+      }),
+      30_000
+    );
+    await postStage(task.id, 'receiving_response');
+    await postResult(task.id, chatsOutcome);
+    return;
+  }
+
+  const projectsOutcome = await raceWithTimeout(
+    sendToTab(tab.tabId, { type: 'HCR_DISCOVER_PROJECTS', taskId: task.id }),
+    30_000
+  );
+  await postStage(task.id, 'receiving_response');
+  await postResult(task.id, projectsOutcome);
+}
+
 async function processTask(task: CompanionTask): Promise<void> {
   if (state.busy || state.activeTask) return;
   state.busy = true;
   state.activeTask = task;
 
   try {
-    await postStage(task.id, 'opening_chatgpt');
-    const tab = await findOrOpenChatGptTab();
-    if ('error' in tab) {
-      state.chatgptState = 'tab_not_found';
-      await postResult(task.id, {
-        status: 'NO_TAB',
-        message: 'Open ChatGPT Web in this browser, then retry.',
-        chatgptState: 'tab_not_found',
-      });
+    if (task.kind === 'discover_projects' || task.kind === 'discover_chats') {
+      await runDiscoveryTask(task);
       return;
     }
-
-    await postStage(task.id, 'sending_prompt');
-    const outcome = await Promise.race([
-      sendToContent(tab.tabId, task),
-      new Promise<SubmitOutcome>((resolve) =>
-        setTimeout(
-          () =>
-            resolve({
-              status: 'TIMEOUT',
-              message: 'ChatGPT Web did not finish in time.',
-            }),
-          TASK_TIMEOUT_MS
-        )
-      ),
-    ]);
-
-    if (outcome.chatgptState) state.chatgptState = outcome.chatgptState;
-    await postStage(task.id, 'receiving_response');
-    await postResult(task.id, outcome);
+    await runHandoffTask(task);
   } catch (error) {
     await postResult(task.id, {
       status: 'ERROR',
@@ -245,6 +353,28 @@ async function processTask(task: CompanionTask): Promise<void> {
   } finally {
     state.busy = false;
     state.activeTask = null;
+  }
+}
+
+/** Where the ChatGPT tab is right now (popup status; never guessed). */
+async function readCurrentContext(): Promise<{ project: string | null; session: string | null }> {
+  try {
+    const tabId = await findChatGptTab();
+    if (tabId === null) return { project: null, session: null };
+    const context = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { type: 'HCR_GET_CONTEXT' } satisfies ContextMessage),
+      new Promise<CurrentChatgptContext | null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+    ]);
+    if (!context || context.authRequired || !context.uiSupported) {
+      return { project: null, session: null };
+    }
+    return {
+      project: context.project?.name || context.project?.id || null,
+      session: context.chat?.title || context.chat?.id || null,
+    };
+  } catch {
+    // No content script / no tab: report Unknown instead of guessing.
+    return { project: null, session: null };
   }
 }
 
@@ -263,12 +393,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (kind === 'HCR_POPUP_STATUS') {
     void (async () => {
       await loadToken();
+      const context = await readCurrentContext();
       sendResponse({
         paired: state.token !== null,
         connected: state.lastHeartbeatAt !== null,
         lastHeartbeatAt: state.lastHeartbeatAt,
         chatgptState: state.chatgptState,
         busy: state.busy,
+        currentProject: context.project,
+        currentSession: context.session,
       });
     })();
     return true;

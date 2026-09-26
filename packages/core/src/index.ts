@@ -37,6 +37,16 @@ export type { ApplyOutcome, ApplyFileResult, ApplyFileStatus } from './workspace
 export { diffLines, toUnifiedDiff } from './diff-engine.js';
 export type { DiffLine, FileDiff } from './diff-engine.js';
 export { BrowserCompanionEngine } from './browser-companion-engine.js';
-export type { CompanionTask, CompanionResultHandler } from './browser-companion-engine.js';
+export type { CompanionTask, CompanionResultHandler, DiscoveryAnswer, CompanionTaskKind } from './browser-companion-engine.js';
+export {
+  ChatgptDestinationEngine,
+  destinationMatches,
+  restoreChatgptSelection,
+  projectMatchesDestination,
+  chatMatchesDestination,
+  normalizeChatgptUrl,
+  chatgptProjectIdFromUrl,
+  chatgptChatIdFromUrl,
+} from './chatgpt-destination-engine.js';
 export { WebHandoffEngine, buildHandoffPrompt } from './web-handoff-engine.js';
-export type { WebHandoffDetail, ReviewFile } from './web-handoff-engine.js';
+export type { WebHandoffDetail, ReviewFile, SendInput } from './web-handoff-engine.js';

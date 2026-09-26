@@ -6,8 +6,49 @@ import { DiffView } from '../components/DiffView';
 import { Modal } from '../components/Modal';
 import { useHcr } from '../hcr-context';
 import { apiGet, apiPost, formatBytes, formatTime } from '../api';
-import type { ProjectContextSummary, WebHandoffDetail, WebHandoffSummary } from '../types';
+import type {
+  ChatGptChat,
+  ChatGptProject,
+  ChatgptDestination,
+  ChatgptDiscoveryStatus,
+  ChatgptChatsResponse,
+  ChatgptDestinationResponse,
+  ChatgptProjectsResponse,
+  ProjectContextSummary,
+  WebHandoffDetail,
+  WebHandoffSummary,
+} from '../types';
 import type { PageId } from '../nav';
+
+type DiscoveryState = 'idle' | 'loading' | 'ready';
+
+function normalizeUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value.trim(), 'https://chatgpt.com');
+    return `${parsed.origin.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Identity match by id first, then URL - never by visible name. */
+function matchByIdOrUrl<T extends { id: string; url: string }>(
+  list: T[],
+  target: { id?: string | null; url?: string | null } | null | undefined
+): T | null {
+  if (!target) return null;
+  if (target.id) {
+    const byId = list.find((item) => item.id === target.id);
+    if (byId) return byId;
+  }
+  const wanted = normalizeUrl(target.url);
+  if (wanted) {
+    const byUrl = list.find((item) => normalizeUrl(item.url) === wanted);
+    if (byUrl) return byUrl;
+  }
+  return null;
+}
 
 const LIVE_STATUSES = new Set([
   'waiting_for_browser',
@@ -55,6 +96,219 @@ export function WebHandoffPage({ onNavigate }: { onNavigate: (page: PageId) => v
   const pollRef = useRef<number | null>(null);
 
   const companionConnected = companion?.connected ?? false;
+
+  // ---- ChatGPT destination (Project / Session / Mode) ------------------ //
+  const [projects, setProjects] = useState<ChatGptProject[]>([]);
+  const [projectsState, setProjectsState] = useState<DiscoveryState>('idle');
+  const [projectsStatus, setProjectsStatus] = useState<ChatgptDiscoveryStatus | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [selectedProject, setSelectedProject] = useState<ChatGptProject | null>(null);
+
+  const [chats, setChats] = useState<ChatGptChat[]>([]);
+  const [chatsState, setChatsState] = useState<DiscoveryState>('idle');
+  const [chatsStatus, setChatsStatus] = useState<ChatgptDiscoveryStatus | null>(null);
+  const [chatsError, setChatsError] = useState<string | null>(null);
+  const [selectedChat, setSelectedChat] = useState<ChatGptChat | null>(null);
+  /** Saved session exists but is not in the discovered list. */
+  const [chatMissing, setChatMissing] = useState(false);
+
+  const [mode, setMode] = useState<'continue' | 'create'>('continue');
+  const [newChatTitle, setNewChatTitle] = useState('');
+  const [destinationNotice, setDestinationNotice] = useState<string | null>(null);
+
+  const selectedProjectRef = useRef<ChatGptProject | null>(null);
+  const selectedChatRef = useRef<ChatGptChat | null>(null);
+  const savedDestinationRef = useRef<ChatgptDestination | null>(null);
+  useEffect(() => {
+    selectedProjectRef.current = selectedProject;
+  }, [selectedProject]);
+  useEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
+
+  const loadSavedDestination = useCallback(async (projectPath: string): Promise<ChatgptDestination | null> => {
+    try {
+      const response = await apiGet<ChatgptDestinationResponse>(
+        `/api/browser-companion/chatgpt/destination?projectDir=${encodeURIComponent(projectPath)}`
+      );
+      return response.destination;
+    } catch {
+      // Missing mapping is normal for a first run.
+      return null;
+    }
+  }, []);
+
+  const loadChats = useCallback(
+    async (project: ChatGptProject | null, opts: { refresh?: boolean; restore?: boolean } = {}) => {
+      if (!project) {
+        setChats([]);
+        setChatsState('idle');
+        setSelectedChat(null);
+        setChatsStatus(null);
+        setChatsError(null);
+        setChatMissing(false);
+        return;
+      }
+      setChatsState('loading');
+      setChatsError(null);
+      setChatsStatus(null);
+      setChatMissing(false);
+      setDestinationNotice(null);
+
+      let response: ChatgptChatsResponse;
+      try {
+        response = await apiGet<ChatgptChatsResponse>(
+          `/api/browser-companion/chatgpt/projects/${encodeURIComponent(project.id)}/chats` +
+            `?url=${encodeURIComponent(project.url)}${opts.refresh ? '&refresh=1' : ''}`,
+          { action: 'Could not list chats in that ChatGPT Project' }
+        );
+      } catch (err) {
+        setChats([]);
+        setChatsState('ready');
+        setChatsStatus('error');
+        setChatsError(err instanceof Error ? err.message : 'Could not list chats in that ChatGPT Project.');
+        setSelectedChat(null);
+        return;
+      }
+
+      setChats(response.chats);
+      setChatsStatus(response.status);
+      setChatsError(response.status === 'ok' ? null : response.error);
+      setChatsState('ready');
+
+      if (opts.refresh) {
+        const previous = selectedChatRef.current;
+        const stillThere = previous ? matchByIdOrUrl(response.chats, previous) : null;
+        setSelectedChat(stillThere);
+        if (previous && !stillThere) {
+          setDestinationNotice('The selected chat session is no longer in this ChatGPT Project.');
+        }
+        return;
+      }
+      if (opts.restore) {
+        const saved = savedDestinationRef.current;
+        if (saved && saved.chatMode === 'continue') {
+          const match = matchByIdOrUrl(response.chats, { id: saved.chatId, url: saved.chatUrl });
+          if (match) {
+            setSelectedChat(match);
+            return;
+          }
+          if (saved.chatId || saved.chatUrl) {
+            setSelectedChat(null);
+            setChatMissing(true);
+            return;
+          }
+        }
+      }
+      setSelectedChat(null);
+    },
+    []
+  );
+
+  const loadProjects = useCallback(
+    async (opts: { refresh?: boolean; restore?: boolean } = {}) => {
+      setProjectsState('loading');
+      setProjectsError(null);
+      setProjectsStatus(null);
+
+      let response: ChatgptProjectsResponse;
+      try {
+        response = await apiGet<ChatgptProjectsResponse>(
+          `/api/browser-companion/chatgpt/projects${opts.refresh ? '?refresh=1' : ''}`,
+          { action: 'Could not discover ChatGPT Projects' }
+        );
+      } catch (err) {
+        setProjects([]);
+        setProjectsState('ready');
+        setProjectsStatus('error');
+        setProjectsError(err instanceof Error ? err.message : 'Could not discover ChatGPT Projects.');
+        setSelectedProject(null);
+        setChats([]);
+        setSelectedChat(null);
+        setChatsState('idle');
+        return;
+      }
+
+      setProjects(response.projects);
+      setProjectsStatus(response.status);
+      setProjectsError(response.status === 'ok' ? null : response.error);
+      setProjectsState('ready');
+
+      if (opts.refresh) {
+        const previous = selectedProjectRef.current;
+        const stillThere = previous ? matchByIdOrUrl(response.projects, previous) : null;
+        if (stillThere) {
+          setSelectedProject(stillThere);
+          await loadChats(stillThere, { refresh: true });
+        } else {
+          setSelectedProject(null);
+          setChats([]);
+          setSelectedChat(null);
+          setChatsState('idle');
+          if (previous) setDestinationNotice('The selected ChatGPT Project was not found. Select another one.');
+        }
+        return;
+      }
+
+      if (opts.restore) {
+        const saved = savedDestinationRef.current;
+        const match = saved
+          ? matchByIdOrUrl(response.projects, { id: saved.chatgptProjectId, url: saved.chatgptProjectUrl })
+          : null;
+        if (match) {
+          setSelectedProject(match);
+          await loadChats(match, { restore: true });
+          return;
+        }
+        setSelectedProject(null);
+        setChats([]);
+        setSelectedChat(null);
+        setChatsState('idle');
+        if (saved && response.status === 'ok') {
+          setDestinationNotice('The saved ChatGPT Project was not found. Select a project to continue.');
+        }
+        return;
+      }
+
+      const current = selectedProjectRef.current;
+      const stillThere = current ? matchByIdOrUrl(response.projects, current) : null;
+      if (!stillThere) {
+        setSelectedProject(null);
+        setChats([]);
+        setSelectedChat(null);
+        setChatsState('idle');
+      } else {
+        setSelectedProject(stillThere);
+      }
+    },
+    [loadChats]
+  );
+
+  // A different local HCR project: restore its last-used ChatGPT destination.
+  const localProjectPath = status?.project?.path ?? '';
+  useEffect(() => {
+    setSelectedProject(null);
+    setSelectedChat(null);
+    setProjects([]);
+    setProjectsState('idle');
+    setChats([]);
+    setChatsState('idle');
+    setChatMissing(false);
+    setDestinationNotice(null);
+    savedDestinationRef.current = null;
+    if (localProjectPath.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const saved = await loadSavedDestination(localProjectPath);
+      if (cancelled) return;
+      savedDestinationRef.current = saved;
+      await loadProjects({ restore: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [localProjectPath, loadProjects, loadSavedDestination]);
+
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -139,15 +393,39 @@ export function WebHandoffPage({ onNavigate }: { onNavigate: (page: PageId) => v
 
   const send = async () => {
     if (!detail) return;
+    if (selectedProject && mode === 'continue' && !selectedChat) {
+      setError('Select a chat session, or switch Mode to "Create New Session in Selected Project".');
+      return;
+    }
+    const destination: ChatgptDestination | null = selectedProject
+      ? {
+          chatgptProjectId: selectedProject.id,
+          chatgptProjectName: selectedProject.name,
+          chatgptProjectUrl: selectedProject.url,
+          chatId: mode === 'continue' ? selectedChat?.id ?? null : null,
+          chatTitle: mode === 'continue' ? selectedChat?.title ?? null : null,
+          chatUrl: mode === 'continue' ? selectedChat?.url ?? null : null,
+          chatMode: mode,
+          newChatTitle: mode === 'create' ? newChatTitle.trim() || null : null,
+        }
+      : null;
+
     setBusy(true);
     setError(null);
     try {
-      const sent = await apiPost<WebHandoffDetail>(`/api/web-handoff/${detail.id}/send`, undefined, {
-        action: 'Could not queue the prompt for the Browser Companion.',
-      });
+      const sent = await apiPost<WebHandoffDetail>(
+        `/api/web-handoff/${detail.id}/send`,
+        { destination },
+        { action: 'Could not queue the prompt for the Browser Companion.' }
+      );
       setDetail(sent);
       setShowContext(false);
-      setNotice('Prompt queued for the Browser Companion.');
+      const targeted = destination
+        ? `Prompt queued for ${destination.chatgptProjectName || 'the selected ChatGPT Project'}${
+            destination.chatMode === 'continue' && destination.chatTitle ? ` / ${destination.chatTitle}` : ''
+          }.`
+        : 'Prompt queued for the Browser Companion (no ChatGPT Project selected).';
+      setNotice(targeted);
       startPolling(sent.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send the handoff');
@@ -255,6 +533,60 @@ export function WebHandoffPage({ onNavigate }: { onNavigate: (page: PageId) => v
   const showInvalid = detail?.status === 'invalid_patch_response';
   const showApplied = detail?.status === 'applied';
 
+  const projectPlaceholder =
+    projectsState === 'loading'
+      ? 'Loading...'
+      : projectsStatus === 'not_connected'
+        ? 'Browser Companion Not Connected'
+        : projectsStatus === 'auth_required'
+          ? 'Authentication Required'
+          : projectsStatus === 'ui_unsupported'
+            ? 'Unsupported ChatGPT UI'
+            : projectsState === 'ready' && projects.length === 0
+              ? projectsStatus === 'ok' || !projectsError
+                ? 'No Projects Found'
+                : projectsError
+              : 'Select ChatGPT Project';
+
+  const chatPlaceholder =
+    !selectedProject
+      ? 'Select Project First'
+      : chatsState === 'loading'
+        ? 'Loading...'
+        : chatMissing
+          ? 'Session Not Found'
+          : chatsStatus === 'not_connected'
+            ? 'Browser Companion Not Connected'
+            : chatsStatus === 'auth_required'
+              ? 'Authentication Required'
+              : chatsStatus === 'ui_unsupported'
+                ? 'Unsupported ChatGPT UI'
+                : chatsState === 'ready' && chats.length === 0
+                  ? chatsStatus === 'ok' || !chatsError
+                    ? 'No Sessions Found'
+                    : chatsError
+                  : 'Select Chat Session';
+
+  const onProjectChange = (value: string) => {
+    const project = projects.find((candidate) => candidate.id === value) ?? null;
+    savedDestinationRef.current = null;
+    setDestinationNotice(null);
+    setSelectedProject(project);
+    void loadChats(project);
+  };
+
+  const onChatChange = (value: string) => {
+    setSelectedChat(chats.find((candidate) => candidate.id === value) ?? null);
+    setChatMissing(false);
+  };
+
+  const destinationLabel = detail?.destination
+    ? [
+        detail.destination.chatgptProjectName || detail.destination.chatgptProjectId,
+        detail.destination.chatMode === 'continue' ? (detail.destination.chatTitle ?? 'existing session') : 'new session',
+      ].join(' / ')
+    : null;
+
   return (
     <>
       <PageHeader
@@ -321,6 +653,92 @@ export function WebHandoffPage({ onNavigate }: { onNavigate: (page: PageId) => v
                 ) : null}
               </div>
               {!online ? <p className="error-text">HCR server is not reachable.</p> : null}
+            </div>
+          </Card>
+
+          <Card title="ChatGPT Destination">
+            <div className="stack">
+              <Field label="Local Project" hint="The destination mapping is stored per local project on this machine.">
+                <p className="mono small" style={{ margin: 0, wordBreak: 'break-all' }}>
+                  {status?.project?.path ?? 'No local project selected'}
+                </p>
+              </Field>
+
+              <Field
+                label="Project"
+                hint="Discovered from your signed-in ChatGPT Web UI. Metadata only - HCR never reads other conversations."
+              >
+                <div className="row" style={{ marginBottom: 6 }}>
+                  <button
+                    className="btn btn-sm"
+                    type="button"
+                    onClick={() => void loadProjects({ refresh: true })}
+                    disabled={busy || projectsState === 'loading'}
+                  >
+                    Refresh Projects
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    type="button"
+                    onClick={() => void loadChats(selectedProject, { refresh: true })}
+                    disabled={busy || !selectedProject || chatsState === 'loading'}
+                  >
+                    Refresh Sessions
+                  </button>
+                </div>
+                <select value={selectedProject?.id ?? ''} onChange={(event) => onProjectChange(event.target.value)}>
+                  <option value="">{projectPlaceholder}</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name || project.id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Session">
+                <select
+                  value={selectedChat?.id ?? ''}
+                  onChange={(event) => onChatChange(event.target.value)}
+                  disabled={!selectedProject}
+                >
+                  <option value="">{chatPlaceholder}</option>
+                  {chats.map((chat) => (
+                    <option key={chat.id} value={chat.id}>
+                      {chat.title || chat.id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Mode">
+                <select value={mode} onChange={(event) => setMode(event.target.value as 'continue' | 'create')}>
+                  <option value="continue">Continue Existing Session</option>
+                  <option value="create">Create New Session in Selected Project</option>
+                </select>
+              </Field>
+
+              {mode === 'create' ? (
+                <Field
+                  label="New Session Title"
+                  hint="Optional. ChatGPT may rename the session - the captured URL/ID stays the authoritative identifier."
+                >
+                  <input
+                    type="text"
+                    value={newChatTitle}
+                    onChange={(event) => setNewChatTitle(event.target.value)}
+                    placeholder="e.g. Browser Companion Work"
+                    maxLength={120}
+                  />
+                </Field>
+              ) : null}
+
+              {destinationNotice ? <p className="field-hint">{destinationNotice}</p> : null}
+              {!selectedProject ? (
+                <p className="field-hint">
+                  Without a selected ChatGPT Project the prompt is sent to whichever ChatGPT chat is currently open.
+                </p>
+              ) : null}
             </div>
           </Card>
 
@@ -397,6 +815,7 @@ export function WebHandoffPage({ onNavigate }: { onNavigate: (page: PageId) => v
                 <StatusStepper steps={HANDOFF_STEPS} current={detail.status} error={detail.error} />
                 {detail.summary ? <KeyValue label="Summary" value={detail.summary} /> : null}
                 <KeyValue label="Project" value={detail.projectName} />
+                {destinationLabel ? <KeyValue label="ChatGPT Destination" value={destinationLabel} /> : null}
                 <KeyValue label="Context" value={`${detail.contextSummary?.fileCount ?? 0} files · ${formatBytes(detail.contextSummary?.totalBytes)}`} />
                 <KeyValue label="Source" value="chatgpt-web" />
               </div>

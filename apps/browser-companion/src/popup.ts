@@ -4,6 +4,8 @@ const serverText = document.getElementById('serverText') as HTMLSpanElement;
 const connectionText = document.getElementById('connectionText') as HTMLSpanElement;
 const pairingText = document.getElementById('pairingText') as HTMLSpanElement;
 const chatgptText = document.getElementById('chatgptText') as HTMLSpanElement;
+const currentProjectText = document.getElementById('currentProjectText') as HTMLSpanElement;
+const currentSessionText = document.getElementById('currentSessionText') as HTMLSpanElement;
 const heartbeatText = document.getElementById('heartbeatText') as HTMLSpanElement;
 const pairSection = document.getElementById('pairSection') as HTMLDivElement;
 const pairedSection = document.getElementById('pairedSection') as HTMLDivElement;
@@ -20,6 +22,8 @@ const FALLBACK_STATUS: PopupStatus = {
   lastHeartbeatAt: null,
   chatgptState: 'unknown',
   busy: false,
+  currentProject: null,
+  currentSession: null,
 };
 
 interface BackgroundReply<T> {
@@ -83,6 +87,9 @@ function render(status: PopupStatus): void {
   setStatusText(pairingText, status.paired ? 'Paired' : 'Not Paired', status.paired ? 'ok' : 'warn');
   const chatgpt = describeChatgpt(status.chatgptState);
   setStatusText(chatgptText, chatgpt.text, chatgpt.tone);
+  // Never guessed: Unknown unless the adapter recognized the destination.
+  currentProjectText.textContent = status.currentProject ?? 'Unknown';
+  currentSessionText.textContent = status.currentSession ?? 'Unknown';
   heartbeatText.textContent = status.lastHeartbeatAt
     ? new Date(status.lastHeartbeatAt).toLocaleTimeString()
     : '—';

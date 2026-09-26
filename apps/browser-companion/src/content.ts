@@ -1,249 +1,224 @@
-import type { SubmitMessage, SubmitOutcome, ChatgptState } from './shared.js';
+import {
+  ChatGptDomAdapter,
+  chatgptChatIdFromUrl,
+} from './chatgpt-dom-adapter.js';
+import type {
+  ContextMessage,
+  CurrentChatgptContext,
+  DiscoverChatsMessage,
+  DiscoverProjectsMessage,
+  SubmitMessage,
+  SubmitOutcome,
+} from './shared.js';
 
 /**
  * HCR Browser Companion - content script for ChatGPT Web.
  *
- * Handles exactly one job: take an HCR-provided prompt, put it into the
- * ChatGPT composer, submit it, wait for the assistant to finish, and return
- * the final assistant text to the background worker.
+ * A thin dispatcher: every DOM interaction happens inside ChatGptDomAdapter.
+ *
+ * Handles:
+ *  - HCR_SUBMIT             : targeted Web Handoff prompt (optional destination)
+ *  - HCR_DISCOVER_PROJECTS  : ChatGPT Project metadata
+ *  - HCR_DISCOVER_CHATS     : session metadata for exactly one Project
+ *  - HCR_GET_CONTEXT        : current Project/session (popup status)
  *
  * Explicitly NOT done here:
  *  - no login automation, no CAPTCHA handling, no auth bypass
  *  - no cookie/session reading or extraction
- *  - no interaction with unrelated page content
- *
- * NOTE: ChatGPT Web's DOM changes frequently. Every selector below is a
- * best-effort probe with fallbacks; failures surface as AUTH_REQUIRED /
- * ERROR rather than silently doing the wrong thing.
+ *  - no reading of unrelated conversation contents (discovery = metadata only)
+ *  - no fallback to a generic/new chat, another project or another session
  */
 
-const COMPOSER_SELECTORS = [
-  '#prompt-textarea',
-  'textarea[data-id="root"]',
-  'div[contenteditable="true"][data-lexical-editor="true"]',
-  'form textarea',
-];
+const adapter = new ChatGptDomAdapter();
 
-const SEND_BUTTON_SELECTORS = [
-  '[data-testid="send-button"]',
-  'button[aria-label="Send prompt"]',
-  'button[data-testid="composer-send-button"]',
-];
+/**
+ * A reload between "click New chat" and the response is handled by remembering
+ * the creation attempt in sessionStorage (project id + previous chat id). This
+ * lets the re-injected content script continue with the session ChatGPT just
+ * opened for THAT project instead of navigating away and starting over.
+ */
+const PENDING_CREATE_KEY = 'hcrPendingChatCreate';
+const PENDING_CREATE_TTL_MS = 60_000;
 
-const STOP_BUTTON_SELECTORS = ['[data-testid="stop-button"]', 'button[aria-label="Stop generating"]'];
-const ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
-
-const COMPOSER_WAIT_MS = 15_000;
-const RESPONSE_WAIT_MS = 180_000;
-const POLL_MS = 700;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+interface PendingCreate {
+  projectId: string;
+  beforeId: string;
+  at: number;
 }
 
-function queryFirst<T extends Element>(selectors: string[], root: ParentNode = document): T | null {
-  for (const selector of selectors) {
-    const found = root.querySelector<T>(selector);
-    if (found) return found;
-  }
-  return null;
-}
-
-/** Detect the logged-out state without attempting to automate sign-in. */
-function isLoggedOut(): boolean {
-  const { pathname } = window.location;
-  if (pathname.startsWith('/auth/') || pathname.includes('login') || pathname.includes('sign-in')) {
-    return true;
-  }
-  const loginLink = document.querySelector('a[href*="/auth/login"], button[data-testid="login-button"]');
-  if (loginLink) return true;
-  const bodyText = (document.body?.innerText ?? '').slice(0, 4000);
-  if (/log in or sign up|sign up for free|welcome back/i.test(bodyText)) {
-    const composer = queryFirst(COMPOSER_SELECTORS);
-    if (!composer) return true;
-  }
-  return false;
-}
-
-async function waitForComposer(): Promise<Element | null> {
-  const deadline = Date.now() + COMPOSER_WAIT_MS;
-  while (Date.now() < deadline) {
-    const composer = queryFirst(COMPOSER_SELECTORS);
-    if (composer) return composer;
-    if (isLoggedOut()) return null;
-    await sleep(250);
-  }
-  return queryFirst(COMPOSER_SELECTORS);
-}
-
-function detectState(): ChatgptState {
-  if (isLoggedOut()) return 'auth_required';
-  return queryFirst(COMPOSER_SELECTORS) ? 'ready' : 'unknown';
-}
-
-/** Put text into the composer (textarea or ProseMirror contenteditable). */
-function setComposerText(composer: Element, text: string): boolean {
+function readPendingCreate(projectId: string): PendingCreate | null {
   try {
-    composer.scrollIntoView({ block: 'center' });
-    if (composer instanceof HTMLTextAreaElement) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      if (setter) setter.call(composer, text);
-      else composer.value = text;
-      composer.dispatchEvent(new Event('input', { bubbles: true }));
-      return composer.value.length > 0;
-    }
-
-    if (composer instanceof HTMLElement && composer.isContentEditable) {
-      composer.focus();
-      // execCommand keeps the editor's own state (ProseMirror/React) in sync.
-      document.execCommand('selectAll', false, undefined);
-      const inserted = document.execCommand('insertText', false, text);
-      if (inserted && (composer.textContent ?? '').length > 0) return true;
-
-      composer.textContent = text;
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-      return (composer.textContent ?? '').length > 0;
-    }
+    const raw = sessionStorage.getItem(PENDING_CREATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingCreate;
+    if (!parsed || parsed.projectId !== projectId) return null;
+    if (Date.now() - Number(parsed.at) > PENDING_CREATE_TTL_MS) return null;
+    return parsed;
   } catch {
-    return false;
+    return null;
   }
-  return false;
 }
 
-function clickSend(composer: Element): boolean {
-  const button = queryFirst<HTMLButtonElement>(SEND_BUTTON_SELECTORS);
-  if (button && !button.disabled) {
-    button.click();
-    return true;
-  }
-  // Fallback: Enter in the composer (ChatGPT submits on Enter).
+function clearPendingCreate(): void {
   try {
-    const event = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-    });
-    composer.dispatchEvent(event);
-    return true;
+    sessionStorage.removeItem(PENDING_CREATE_KEY);
   } catch {
-    return false;
+    // Storage is best effort.
   }
 }
 
-function assistantCount(): number {
-  return document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR).length;
-}
-
-function isGenerating(): boolean {
-  return queryFirst(STOP_BUTTON_SELECTORS) !== null;
-}
-
-function lastAssistantText(): string {
-  const messages = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR);
-  const last = messages[messages.length - 1];
-  return (last?.textContent ?? '').trim();
-}
-
-async function waitForCompletion(startCount: number): Promise<string> {
-  const deadline = Date.now() + RESPONSE_WAIT_MS;
-  let sawGeneration = isGenerating();
-
-  while (Date.now() < deadline) {
-    await sleep(POLL_MS);
-    if (isGenerating()) sawGeneration = true;
-    if (sawGeneration && !isGenerating()) break;
-
-    // No stop button (layout change): fall back to message-count growth.
-    if (!sawGeneration && assistantCount() > startCount) {
-      // Wait for the newest message to settle.
-      await sleep(1_500);
-      break;
-    }
-  }
-
-  const text = lastAssistantText();
-  if (text.length > 0) return text;
-  // Last resort: any non-empty assistant message after submission.
-  const messages = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR);
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const content = (messages[i].textContent ?? '').trim();
-    if (content.length > 0) return content;
-  }
-  throw new Error('ChatGPT finished without a readable assistant response.');
-}
-
-async function runSubmit(prompt: string): Promise<SubmitOutcome> {
-  const composer = await waitForComposer();
-  if (!composer) {
-    const state = detectState();
-    if (state === 'auth_required') {
-      return {
-        status: 'AUTH_REQUIRED',
-        message: 'Open ChatGPT and sign in, then retry.',
-        chatgptState: 'auth_required',
-      };
-    }
-    return {
-      status: 'ERROR',
-      message: 'Could not find the ChatGPT composer.',
-      chatgptState: state,
-    };
-  }
-
-  const startCount = assistantCount();
-
-  if (!setComposerText(composer, prompt)) {
-    return {
-      status: 'ERROR',
-      message: 'Could not insert the HCR prompt into the ChatGPT composer.',
-      chatgptState: detectState(),
-    };
-  }
-
-  // Give React a tick to enable the send button.
-  await sleep(400);
-
-  if (!clickSend(composer)) {
-    return {
-      status: 'ERROR',
-      message: 'Could not submit the prompt to ChatGPT.',
-      chatgptState: detectState(),
-    };
-  }
-
-  // Confirm the request actually started; otherwise retry submission once.
-  await sleep(2_500);
-  if (!isGenerating() && assistantCount() === startCount) {
-    clickSend(composer);
-    await sleep(2_500);
-  }
-
+function notePendingCreate(projectId: string, beforeId: string): void {
   try {
-    const responseText = await waitForCompletion(startCount);
-    return { status: 'OK', responseText, chatgptState: 'ready' };
-  } catch (error) {
-    return {
-      status: 'ERROR',
-      message: error instanceof Error ? error.message : 'No response received.',
-      chatgptState: detectState(),
-    };
+    sessionStorage.setItem(
+      PENDING_CREATE_KEY,
+      JSON.stringify({ projectId, beforeId, at: Date.now() } satisfies PendingCreate)
+    );
+  } catch {
+    // Storage is best effort.
   }
+}
+
+function authOutcome(): SubmitOutcome | null {
+  if (!adapter.isLoggedOut()) return null;
+  return {
+    status: 'AUTH_REQUIRED',
+    message: 'Open ChatGPT and sign in, then retry.',
+    chatgptState: 'auth_required',
+  };
+}
+
+/** Internal signal: the tab must be loaded at `message` before retrying. */
+function navigateTo(url: string): SubmitOutcome {
+  return { status: 'NAVIGATE', message: url };
+}
+
+async function handleSubmit(message: SubmitMessage): Promise<SubmitOutcome> {
+  const auth = authOutcome();
+  if (auth) return auth;
+
+  const destination = message.destination ?? null;
+
+  if (destination?.chatMode === 'create') {
+    // Continue a session that was opened just before a page reload?
+    const pending = readPendingCreate(destination.chatgptProjectId);
+    const currentChatId = chatgptChatIdFromUrl(window.location.href);
+    if (pending && currentChatId && currentChatId !== pending.beforeId) {
+      clearPendingCreate();
+    } else {
+      clearPendingCreate();
+      const nav = adapter.navigateToProject({
+        id: destination.chatgptProjectId,
+        url: destination.chatgptProjectUrl,
+      });
+      if (nav.action === 'navigate') return navigateTo(nav.url);
+      if (nav.action === 'error') return { status: nav.code, message: nav.message };
+
+      const verify = adapter.verifyDestination(destination);
+      if (!verify.ok) return { status: verify.code, message: verify.message };
+
+      const beforeId = chatgptChatIdFromUrl(window.location.href) ?? '';
+      notePendingCreate(destination.chatgptProjectId, beforeId);
+      const created = await adapter.createChatInProject(
+        { id: destination.chatgptProjectId, url: destination.chatgptProjectUrl },
+        destination.newChatTitle
+      );
+      if (!created.ok) {
+        clearPendingCreate();
+        return { status: created.code, message: created.message };
+      }
+      clearPendingCreate();
+    }
+  } else if (destination) {
+    const nav = adapter.navigateToChat({ id: destination.chatId, url: destination.chatUrl });
+    if (nav.action === 'navigate') return navigateTo(nav.url);
+    if (nav.action === 'error') return { status: nav.code, message: nav.message };
+
+    const verify = adapter.verifyDestination(destination);
+    if (!verify.ok) return { status: verify.code, message: verify.message };
+  }
+
+  const outcome = await adapter.sendPrompt(message.prompt);
+  if (outcome.status !== 'OK') return outcome;
+  if (destination) return { ...outcome, session: adapter.currentSession(destination) };
+  return outcome;
+}
+
+async function handleDiscoverProjects(_message: DiscoverProjectsMessage): Promise<SubmitOutcome> {
+  const auth = authOutcome();
+  if (auth) return auth;
+  const result = adapter.discoverProjects();
+  if (result.status !== 'ok') return { status: result.status, message: result.message };
+  // Metadata only: id/name/url, never conversation contents.
+  return { status: 'OK', projects: result.projects ?? [] };
+}
+
+async function handleDiscoverChats(message: DiscoverChatsMessage): Promise<SubmitOutcome> {
+  const auth = authOutcome();
+  if (auth) return auth;
+
+  const project = {
+    id: message.projectId,
+    url: message.projectUrl || (message.projectId ? `https://chatgpt.com/project/${message.projectId}` : ''),
+  };
+  if (!project.id && !project.url) {
+    return { status: 'PROJECT_NOT_FOUND', message: 'The selected ChatGPT Project has no usable id.' };
+  }
+
+  // Chats can only be listed from inside the selected Project page.
+  const nav = adapter.navigateToProject(project);
+  if (nav.action === 'navigate') return navigateTo(nav.url);
+  if (nav.action === 'error') return { status: nav.code, message: nav.message };
+
+  const result = adapter.discoverChats(project);
+  if (result.status !== 'ok') return { status: result.status, message: result.message };
+  // Metadata only: id/title/url of sessions inside THIS project.
+  return { status: 'OK', chats: result.chats ?? [] };
+}
+
+function handleContext(_message: ContextMessage): CurrentChatgptContext {
+  return adapter.getCurrentContext();
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const payload = message as SubmitMessage | undefined;
-  if (!payload || payload.type !== 'HCR_SUBMIT') return false;
-  void runSubmit(payload.prompt)
-    .then((outcome) => sendResponse(outcome))
-    .catch((error: unknown) =>
-      sendResponse({
-        status: 'ERROR',
-        message: error instanceof Error ? error.message : 'Content script failure.',
-        chatgptState: 'error',
-      } satisfies SubmitOutcome)
-    );
-  return true; // keep the message channel open for the async response
+  const payload = message as SubmitMessage | DiscoverProjectsMessage | DiscoverChatsMessage | ContextMessage | undefined;
+  if (!payload || typeof payload.type !== 'string') return false;
+
+  switch (payload.type) {
+    case 'HCR_SUBMIT':
+      void handleSubmit(payload as SubmitMessage)
+        .then((outcome) => sendResponse(outcome))
+        .catch((error: unknown) =>
+          sendResponse({
+            status: 'ERROR',
+            message: error instanceof Error ? error.message : 'Content script failure.',
+            chatgptState: 'error',
+          } satisfies SubmitOutcome)
+        );
+      return true; // keep the message channel open for the async response
+    case 'HCR_DISCOVER_PROJECTS':
+      void handleDiscoverProjects(payload as DiscoverProjectsMessage)
+        .then((outcome) => sendResponse(outcome))
+        .catch((error: unknown) =>
+          sendResponse({
+            status: 'ERROR',
+            message: error instanceof Error ? error.message : 'Discovery failure.',
+          } satisfies SubmitOutcome)
+        );
+      return true;
+    case 'HCR_DISCOVER_CHATS':
+      void handleDiscoverChats(payload as DiscoverChatsMessage)
+        .then((outcome) => sendResponse(outcome))
+        .catch((error: unknown) =>
+          sendResponse({
+            status: 'ERROR',
+            message: error instanceof Error ? error.message : 'Discovery failure.',
+          } satisfies SubmitOutcome)
+        );
+      return true;
+    case 'HCR_GET_CONTEXT':
+      sendResponse(handleContext(payload as ContextMessage));
+      return false;
+    default:
+      return false;
+  }
 });

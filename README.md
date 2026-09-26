@@ -216,6 +216,39 @@ Handoff states:
 `validating_patch` -> `ready_for_review` -> (`applied` | `reverted` |
 `rejected` | `invalid_patch_response` | `error`).
 
+### Destination targeting (ChatGPT Project + Chat Session)
+
+Web Handoff delivers the prompt to a **selected** destination instead of
+whatever chat happens to be open:
+
+```
+Local Project -> ChatGPT Project -> Chat Session -> Web Handoff -> HCR_PATCH_V1 -> Review -> Apply
+```
+
+Example: local `C:\heisenberg-coder-router` -> Project **HCR Development** ->
+Session **Browser Companion Work**.
+
+- **Discover** - the Web Handoff page asks the companion (through HCR) for the
+  Projects visible in your signed-in ChatGPT UI, then for the sessions of one
+  Project. Discovery returns identity metadata only (`id`, `name`/`title`,
+  `url`); nothing else leaves the browser, and no conversation contents are
+  ever read.
+- **Continue Existing Session** sends into exactly that session.
+  **Create New Session** opens a new session inside exactly that Project (the
+  optional title is a hint, never the identifier).
+- **Identity is the URL/id.** Names are presentation only: a renamed Project
+  or session still matches, a Project/session with the same name but another
+  id never does. A saved destination is restored only when its id/URL still
+  exists in the freshly discovered list - never by name, never at random.
+- **No fallback, ever.** If the selected destination cannot be verified the
+  handoff fails with an explicit code and never retargets to another Project,
+  another session or a generic new chat: `PROJECT_NOT_FOUND`,
+  `CHAT_NOT_FOUND`, `AUTH_REQUIRED`, `UI_UNSUPPORTED`.
+- **Last-used mapping.** HCR remembers the destination per local project
+  (ids/URLs/names only) and re-selects it the next time that project is
+  prepared; after a successful run the session actually used - including a
+  just-created one - becomes the new preference.
+
 ## Browser Companion (optional)
 
 The Browser Companion is a Manifest V3 Chrome/Edge extension that carries the
@@ -251,6 +284,11 @@ Pairing and security:
   cookies, credentials or session storage, never logs in for you, and never
   solves CAPTCHAs - if ChatGPT needs sign-in, the handoff reports
   `AUTH_REQUIRED` with "Open ChatGPT and sign in, then retry."
+- The popup shows **Current Project** and **Current Session** as the adapter
+  reports them (`Unknown` when the tab is not in a recognized Project/session) -
+  never guessed from titles or screenshots.
+- Discovery and delivery both run inside that `chatgpt.com` tab; the extension
+  never opens, reads or writes any other site.
 - **Rotate Secret** invalidates the old token so the extension must pair again.
 
 ## Context Privacy
@@ -284,6 +322,8 @@ What actually leaves your machine is decided locally, before anything is sent:
 - No git commit, push, branch or tag operation is performed automatically.
 - No OpenAI API key is used, requested or stored for Web Handoff.
 - No ChatGPT credentials, cookies or CAPTCHA automation.
+- ChatGPT Project/session discovery is metadata only (`id`, `name`/`title`,
+  `url`); no conversation contents are read, stored or displayed.
 - Only `https://chatgpt.com/*` is an allowed browser target.
 - Patches are never auto-applied: review first, then apply, then revert.
 - Secret files (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.netrc`,
@@ -345,7 +385,9 @@ Web Handoff:
 - `GET /api/web-handoff/:id` - handoff detail (files, diffs, status)
 - `GET /api/web-handoff/:id/context` - full context + exclusions
 - `POST /api/web-handoff/:id/send` - queue the prompt for the companion
+  (optional `{ "destination": ... }` to target a ChatGPT Project/session)
 - `POST /api/web-handoff/:id/retry` - requeue with the correction prompt
+  (keeps the originally selected destination)
 - `POST /api/web-handoff/:id/reject` - reject the proposal
 - `POST /api/web-handoff/:id/apply` - validate and write the reviewed patch
 - `POST /api/web-handoff/:id/revert` - one-level rollback of the last apply
@@ -361,6 +403,13 @@ Browser Companion:
 - `GET /api/browser-companion/task` - token required
 - `POST /api/browser-companion/task/:id/stage` - token required
 - `POST /api/browser-companion/task/:id/result` - token required
+- `GET /api/browser-companion/chatgpt/projects?refresh=1` - discovered ChatGPT
+  Projects (metadata only; status `ok` / `not_connected` / `auth_required` /
+  `ui_unsupported` / `timeout` / `no_tab` / `error`)
+- `GET /api/browser-companion/chatgpt/projects/:projectId/chats?url=...&refresh=1`
+  - sessions of exactly one Project (metadata only)
+- `GET /api/browser-companion/chatgpt/destination?projectDir=...` - last-used
+  destination remembered for a local project
 - `GET /api/browser-companion/download`, `GET /downloads/hcr-browser-companion.zip`
 
 ## External Dependencies
@@ -376,7 +425,8 @@ installed**:
 
 On first startup HCR creates `data/router.sqlite` containing the desired route,
 project directory, companion pairing state and Web Handoff metadata (task title,
-status, and the local-only patch needed for review/revert). No cookies, no
+status, the ChatGPT Project/session ids, URLs and display names of the selected
+destination, and the local-only patch needed for review/revert). No cookies, no
 credentials, no project context and no conversation history are stored. Set
 `HCR_DATA_DIR` to relocate the database (used by the test suite).
 
@@ -394,7 +444,9 @@ credentials, no project context and no conversation history are stored. Set
 Test suites cover patch schema validation, workspace path safety (traversal,
 absolute paths, protected files, symlink escapes), apply/revert/rollback
 behaviour, companion pairing and token authorization, context exclusion
-secrets/lockfiles/binaries and the full Web Handoff lifecycle.
+secrets/lockfiles/binaries, the full Web Handoff lifecycle and ChatGPT
+destination targeting (discovery, deterministic selection, error codes - all
+with mocked browser responses).
 
 ## License
 
