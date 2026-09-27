@@ -376,6 +376,217 @@ export interface CompanionStatus {
   pairingExpiresAt: string | null;
 }
 
+// ---- HCoder agent protocol (provider-neutral local coding agent) ----
+
+/** HCoder package version reported by HCR and the CLI. */
+export const HCODER_VERSION = '0.1.0';
+
+/** Structured tool-request contract emitted by the model. */
+export const HCODER_AGENT_VERSION = 'HCODER_AGENT_V1';
+
+/** Structured tool-result contract returned by HCoder to the model. */
+export const HCODER_TOOL_RESULT_VERSION = 'HCODER_TOOL_RESULT_V1';
+
+/** Intelligence routes HCR can select for HCoder agent turns. */
+export type HcoderRoute = 'companion' | 'ollama';
+
+/** Human-readable label per route (dashboard / CLI status). */
+export const HCODER_ROUTE_LABELS: Record<HcoderRoute, string> = {
+  companion: 'ChatGPT Web (Browser Companion)',
+  ollama: 'Ollama',
+};
+
+/** Only these tools exist. Anything else is rejected - never inferred. */
+export type HcoderToolName =
+  | 'read_file'
+  | 'list_directory'
+  | 'search_files'
+  | 'search_text'
+  | 'read_many_files';
+
+export const HCODER_TOOLS: readonly HcoderToolName[] = [
+  'read_file',
+  'list_directory',
+  'search_files',
+  'search_text',
+  'read_many_files',
+];
+
+/** needs_context = more project context required; answered/ready = terminal. */
+export type HcoderAgentStatus = 'needs_context' | 'ready' | 'answered';
+
+export interface HcoderToolRequest {
+  id: string;
+  tool: HcoderToolName;
+  /** read_file / list_directory / search_text (optional scope). */
+  path?: string;
+  /** search_files. */
+  pattern?: string;
+  /** search_text. */
+  query?: string;
+  /** search_text optional glob. */
+  glob?: string;
+  /** read_file optional line window. */
+  offset?: number;
+  limit?: number;
+  /** read_many_files. */
+  paths?: string[];
+}
+
+export interface HcoderAgentV1 {
+  version: typeof HCODER_AGENT_VERSION;
+  status: HcoderAgentStatus;
+  requests: HcoderToolRequest[];
+  /** Optional short message (only meaningful on a terminal status). */
+  message?: string;
+}
+
+export interface HcoderToolError {
+  code: string;
+  message: string;
+}
+
+export interface HcoderDirectoryEntry {
+  name: string;
+  type: 'file' | 'directory';
+  relativePath: string;
+}
+
+export interface HcoderSearchMatch {
+  path: string;
+  line?: number;
+  snippet?: string;
+}
+
+export interface HcoderToolResultEntry {
+  id: string;
+  tool: HcoderToolName | string;
+  path?: string;
+  ok: boolean;
+  /** read_file / read_many_files text content. */
+  content?: string;
+  /** list_directory. */
+  entries?: HcoderDirectoryEntry[];
+  /** search_files / search_text. */
+  matches?: HcoderSearchMatch[];
+  truncated?: boolean;
+  bytes?: number;
+  /** Never a raw stack trace. */
+  error?: HcoderToolError;
+}
+
+export interface HcoderToolResultV1 {
+  version: typeof HCODER_TOOL_RESULT_VERSION;
+  results: HcoderToolResultEntry[];
+}
+
+/** One message of a local HCoder conversation (CLI-owned history). */
+export interface HcoderAgentMessage {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+}
+
+/** POST /api/hcoder/turn request body. */
+export interface HcoderTurnRequest {
+  /** Omit on the first turn to start a new logical session. */
+  sessionId?: string;
+  /** Absolute local project root (realpath-resolved by the CLI). */
+  projectRoot: string;
+  /** Full conversation history; the last message is the new input. */
+  messages: HcoderAgentMessage[];
+}
+
+/** Classified assistant reply (never provider-specific). */
+export interface HcoderTurnReply {
+  kind: 'agent' | 'patch' | 'text' | 'invalid';
+  /** Raw assistant text, kept for the local conversation history. */
+  raw: string;
+  agent?: HcoderAgentV1;
+  patch?: HcrPatchV1;
+  text?: string;
+  /** Set when kind === 'invalid'. */
+  errors?: string[];
+}
+
+/** POST /api/hcoder/turn response body. */
+export interface HcoderTurnResponse {
+  sessionId: string;
+  route: HcoderRoute;
+  /** Provider identity behind the route (never a transport detail). */
+  provider: 'chatgpt-web' | 'ollama' | string;
+  model: string | null;
+  /** ChatGPT project/session target when the companion route is active. */
+  destination: ChatgptSessionRef | null;
+  reply: HcoderTurnReply;
+}
+
+/** Deterministic HCoder failure codes (no silent provider fallback). */
+export type HcoderErrorCode =
+  | 'HCR_UNAVAILABLE'
+  | 'SESSION_NOT_FOUND'
+  | 'ROUTE_UNAVAILABLE'
+  | 'AGENT_PROTOCOL_UNSUPPORTED'
+  | 'INVALID_AGENT_RESPONSE'
+  | 'AGENT_LOOP_LIMIT_REACHED'
+  | 'RESULT_TOO_LARGE'
+  | 'AUTH_REQUIRED'
+  | 'PROJECT_NOT_FOUND'
+  | 'CHAT_NOT_FOUND'
+  | 'UI_UNSUPPORTED'
+  | 'NO_TAB'
+  | 'TIMEOUT'
+  | 'PATCH_PROJECT_MISMATCH'
+  | 'NO_PENDING_PATCH'
+  | 'NO_APPLIED_PATCH'
+  | 'PATH_REJECTED';
+
+/** Capabilities HCR advertises for the local HCoder package. */
+export interface HcoderCapabilities {
+  readFile: boolean;
+  listDirectory: boolean;
+  searchFiles: boolean;
+  searchText: boolean;
+  patchApply: boolean;
+  rollback: boolean;
+  shell: false;
+}
+
+export interface HcoderPackageInfo {
+  name: string;
+  version: string;
+  filename: string;
+  available: boolean;
+  bytes: number;
+  url: string;
+  installCommand: string;
+  updateCommand: string;
+  uninstallCommand: string;
+}
+
+/** GET /api/hcoder/status response. */
+export interface HcoderStatusResponse {
+  version: string;
+  route: HcoderRoute;
+  routeLabel: string;
+  provider: string;
+  model: string | null;
+  destination: ChatgptSessionRef | null;
+  companion: CompanionStatus | null;
+  online: boolean;
+  capabilities: HcoderCapabilities;
+  limits: {
+    maxRounds: number;
+    maxToolRequestsPerRound: number;
+    maxBytesPerFile: number;
+    maxResultBytesPerRound: number;
+    maxTotalToolResultBytes: number;
+    maxSearchResults: number;
+  };
+  package: HcoderPackageInfo;
+  /** e.g. http://127.0.0.1:7876/#/hcoder */
+  dashboardUrl: string;
+}
+
 /** Metadata-only record of one observed gateway request (no content). */
 export interface RecentRequest {
   requestId: string;

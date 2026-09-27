@@ -11,6 +11,9 @@ export interface PathValidationResult {
   error: string | null;
 }
 
+/** What the caller intends to do with the path (affects wording only). */
+export type PathPurpose = 'write' | 'read';
+
 export interface PatchPathIssue {
   path: string;
   error: string;
@@ -154,8 +157,20 @@ export class PatchValidationEngine {
     return protectedBy;
   }
 
-  /** Validate one raw path from ChatGPT against a project root. */
-  validateProjectPath(projectRoot: string, rawPath: string): PathValidationResult {
+  /**
+   * Validate one raw path from an untrusted source against a project root.
+   *
+   * The same engine guards Web Handoff writes and HCoder reads - only the
+   * wording of a rejection differs (`purpose`). There is intentionally no
+   * second path-validation implementation anywhere in the product.
+   */
+  validateProjectPath(
+    projectRoot: string,
+    rawPath: string,
+    purpose: PathPurpose = 'write'
+  ): PathValidationResult {
+    const actor = purpose === 'read' ? 'HCoder' : 'Web Handoff';
+    const verb = purpose === 'read' ? 'read' : 'modified';
     const fail = (error: string): PathValidationResult => ({
       ok: false,
       relativePath: rawPath,
@@ -225,12 +240,12 @@ export class PatchValidationEngine {
 
     const protectedDir = segments.find((segment) => PROTECTED_DIRS.has(segment.toLowerCase()));
     if (protectedDir) {
-      return fail(`Protected directory ("${protectedDir}") cannot be modified by Web Handoff: ${relativePath}`);
+      return fail(`Protected directory ("${protectedDir}") cannot be ${verb} by ${actor}: ${relativePath}`);
     }
 
     const protectedBy = this.isProtected(relativePath);
     if (protectedBy) {
-      return fail(`Protected file (${protectedBy}) cannot be modified by Web Handoff: ${relativePath}`);
+      return fail(`Protected file (${protectedBy}) cannot be ${verb} by ${actor}: ${relativePath}`);
     }
 
     return { ok: true, relativePath, absolutePath, error: null };

@@ -29,6 +29,7 @@ export type {
   PathValidationResult,
   PatchPathIssue,
   PatchPathValidation,
+  PathPurpose,
 } from './patch-validation-engine.js';
 export { ProjectContextEngine, CONTEXT_LIMITS, IGNORED_DIRECTORIES } from './project-context-engine.js';
 export type { ProjectContext, ContextOptions } from './project-context-engine.js';
@@ -50,3 +51,22 @@ export {
 } from './chatgpt-destination-engine.js';
 export { WebHandoffEngine, buildHandoffPrompt } from './web-handoff-engine.js';
 export type { WebHandoffDetail, ReviewFile, SendInput } from './web-handoff-engine.js';
+
+// HCoder feature set (local coding agent + filesystem execution plane)
+export { HcoderToolEngine, HCODER_TOOL_LIMITS, HCODER_AGENT_LOOP_LIMITS } from './hcoder-tool-engine.js';
+export {
+  HCODER_AGENT_INSTRUCTION,
+  validateHcoderAgent,
+  parseHcoderAgent,
+  classifyAgentReply,
+  loopLimitMessage,
+} from './hcoder-agent-protocol.js';
+export type { AgentParseResult } from './hcoder-agent-protocol.js';
+export { HcoderAgentLoop } from './hcoder-agent-loop.js';
+export type { AgentLoopTransport, AgentLoopEvent, AgentLoopResult, AgentLoopOptions } from './hcoder-agent-loop.js';
+export { HcoderPatchStore, HcoderStoreError } from './hcoder-patch-store.js';
+export type { HcoderStagedPatch, HcoderPatchMeta, HcoderHistoryEntry, PatchHistoryStatus } from './hcoder-patch-store.js';
+export { HcoderEngine, HcoderAgentError, buildCompanionPrompt } from './hcoder-engine.js';
+export type { HcoderEngineDeps, HcoderEngineStatus } from './hcoder-engine.js';
+export { BINARY_EXTENSIONS, readGitignore } from './project-context-engine.js';
+export type { GitignoreRules } from './project-context-engine.js';

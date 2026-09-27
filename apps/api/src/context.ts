@@ -4,6 +4,7 @@ import {
   CodexEngine,
   DatabaseEngine,
   GatewayEngine,
+  HcoderEngine,
   ModelEngine,
   OllamaEngine,
   ProjectContextEngine,
@@ -30,6 +31,8 @@ export interface AppContext {
   /** Optional Web Handoff feature set (ChatGPT Web intelligence source). */
   companion: BrowserCompanionEngine;
   webHandoff: WebHandoffEngine;
+  /** HCoder control channel (provider-neutral agent turns for the local CLI). */
+  hcoder: HcoderEngine;
 }
 
 export function createContext(): AppContext {
@@ -63,6 +66,18 @@ export function createContext(): AppContext {
     webHandoff.handleResult(handoffId, taskId, result)
   );
 
+  // HCoder: provider-neutral agent turns (companion vs Ollama route).
+  const hcoder = new HcoderEngine({
+    db,
+    companion,
+    getRouteState: () => {
+      const desired = routing.getDesired();
+      return { provider: desired.provider, model: desired.model ?? null };
+    },
+    getOllamaStatus: () => ollama.getStatus(),
+    getProjectRoot: () => projects.getProject()?.path ?? null,
+  });
+
   return {
     db,
     ollama,
@@ -75,6 +90,7 @@ export function createContext(): AppContext {
     gateway,
     companion,
     webHandoff,
+    hcoder,
   };
 }
 

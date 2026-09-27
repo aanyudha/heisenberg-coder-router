@@ -30,7 +30,7 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 const DISCOVERY_CACHE_MS = 30_000;
 
 /** What a queued companion task asks the extension to do. */
-export type CompanionTaskKind = 'handoff' | 'discover_projects' | 'discover_chats';
+export type CompanionTaskKind = 'handoff' | 'discover_projects' | 'discover_chats' | 'agent';
 
 export interface CompanionTask {
   id: string;
@@ -94,6 +94,7 @@ export class BrowserCompanionEngine {
   private pending: CompanionTask[] = [];
   private stageByTask = new Map<string, CompanionStage>();
   private resultHandler: CompanionResultHandler | null = null;
+  private agentResultHandler: CompanionResultHandler | null = null;
   private discoveryWaiters = new Map<string, DiscoveryWaiter>();
   private discoveryCache = new Map<string, { at: number; answer: DiscoveryAnswer }>();
   private chatgpt: CompanionStatus['chatgpt'] = {
@@ -215,6 +216,14 @@ export class BrowserCompanionEngine {
     this.resultHandler = handler;
   }
 
+  /**
+   * Result sink for HCoder agent turns (`kind: 'agent'`). Web Handoff keeps
+   * its own handler - the two workflows never receive each other's results.
+   */
+  setAgentResultHandler(handler: CompanionResultHandler): void {
+    this.agentResultHandler = handler;
+  }
+
   // ---- task queue ----
 
   queueTask(
@@ -259,6 +268,12 @@ export class BrowserCompanionEngine {
     if (index >= 0) this.pending.splice(index, 1);
     this.stageByTask.delete(taskId);
     if (!task) return null;
+
+    // HCoder agent turns settle their own waiter (never a Web Handoff).
+    if (task.kind === 'agent') {
+      if (this.agentResultHandler) await this.agentResultHandler(task.handoffId, taskId, result);
+      return task.handoffId;
+    }
 
     // Discovery tasks answer the waiting request instead of a Web Handoff.
     if (task.kind !== 'handoff') {

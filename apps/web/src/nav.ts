@@ -7,6 +7,7 @@ export type PageId =
   | 'models'
   | 'web-handoff'
   | 'browser-companion'
+  | 'hcoder'
   | 'projects'
   | 'activity'
   | 'live-traffic'
@@ -45,6 +46,10 @@ export const NAV: NavSection[] = [
     ],
   },
   {
+    title: 'Coding',
+    items: [{ id: 'hcoder', label: 'HCoder' }],
+  },
+  {
     title: 'Workspace',
     items: [
       { id: 'projects', label: 'Projects' },
@@ -74,6 +79,7 @@ export const PAGE_TITLE: Record<PageId, string> = {
   models: 'Models',
   'web-handoff': 'Web Handoff',
   'browser-companion': 'Browser Companion',
+  hcoder: 'HCoder',
   projects: 'Projects',
   activity: 'Activity',
   'live-traffic': 'Live Traffic',
@@ -89,6 +95,7 @@ export const PAGE_SECTION: Record<PageId, string> = {
   models: 'AI Routing',
   'web-handoff': 'Automation',
   'browser-companion': 'Automation',
+  hcoder: 'Coding',
   projects: 'Workspace',
   activity: 'Workspace',
   'live-traffic': 'Monitoring',

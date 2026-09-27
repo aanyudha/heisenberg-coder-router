@@ -1,5 +1,5 @@
-export { getOllamaStatus, getOllamaModels, getOllamaBaseUrl, getOllamaContextInfo } from './ollama.js';
-export type { OllamaContextInfo } from './ollama.js';
+export { getOllamaStatus, getOllamaModels, getOllamaBaseUrl, getOllamaContextInfo, ollamaChatComplete } from './ollama.js';
+export type { OllamaContextInfo, OllamaChatMessage } from './ollama.js';
 export {
   getOpenAIModels,
   checkOpenAIAvailability,

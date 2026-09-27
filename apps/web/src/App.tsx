@@ -19,6 +19,7 @@ import { ProvidersPage } from './pages/ProvidersPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { WebHandoffPage } from './pages/WebHandoffPage';
 import { BrowserCompanionPage } from './pages/BrowserCompanionPage';
+import { HCoderPage } from './pages/HCoderPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ActivityPage } from './pages/ActivityPage';
 import { LiveTrafficPage } from './pages/LiveTrafficPage';
@@ -118,6 +119,8 @@ export default function App() {
         return <WebHandoffPage onNavigate={navigate} />;
       case 'browser-companion':
         return <BrowserCompanionPage />;
+      case 'hcoder':
+        return <HCoderPage />;
       case 'projects':
         return <ProjectsPage onNavigate={navigate} />;
       case 'activity':

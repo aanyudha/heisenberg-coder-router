@@ -291,6 +291,72 @@ Pairing and security:
   never opens, reads or writes any other site.
 - **Rotate Secret** invalidates the old token so the extension must pair again.
 
+## HCoder (local coding agent)
+
+HCoder (`@heisenberg/hcoder`, command `hcoder`) is HCR's local coding agent: a
+provider-neutral agent loop plus a bounded filesystem execution plane. It
+installs from HCR itself:
+
+```bash
+npm install -g http://127.0.0.1:7876/downloads/hcoder-latest.tgz   # install
+npm install -g --force http://127.0.0.1:7876/downloads/hcoder-latest.tgz   # update
+npm uninstall -g @heisenberg/hcoder                                # remove
+```
+
+The tarball is produced by `npm run build` (or `npm run build:hcoder`) and
+served by the HCR server on the fixed origin `http://127.0.0.1:7876`.
+
+```bash
+hcoder "add input validation to the parser"   # agent task -> staged patch
+hcoder diff                                   # review (nothing written yet)
+hcoder apply                                  # explicit write
+hcoder revert                                 # restore the pre-apply snapshot
+hcoder reject                                 # discard the pending patch
+hcoder route                                  # show the active intelligence route
+hcoder route ollama                           # switch route (persisted in HCR)
+hcoder status --json                          # route, destination, limits, package
+hcoder history                                # metadata-only patch history
+```
+
+How it works:
+
+- **The CLI never talks to a provider.** Every agent turn goes to
+  `POST /api/hcoder/turn` on the local HCR control plane; HCR's `HcoderEngine`
+  picks the active intelligence route - Browser Companion (your ChatGPT tab) or
+  Ollama (a selected local model) - and the protocol stays identical on both
+  (`HCODER_AGENT_V1` in, `HCODER_TOOL_RESULT_V1` back, `HCR_PATCH_V1` at the
+  end). There is **no silent provider fallback**: an incapable or unavailable
+  route fails with a deterministic code (`AGENT_PROTOCOL_UNSUPPORTED`,
+  `ROUTE_UNAVAILABLE`, `AUTH_REQUIRED`, ...).
+- **Session continuity.** On the companion route every round targets the same
+  ChatGPT Project + chat session (created once, then reused in `continue`
+  mode - tool rounds never create a new chat). On the Ollama route the full
+  local conversation is sent on each request.
+- **The AI never touches the filesystem.** HCoder runs only five bounded,
+  read-only tools (`read_file`, `list_directory`, `search_files`,
+  `search_text`, `read_many_files`) through the same `PatchValidationEngine`
+  sandbox Web Handoff uses for writes: traversal, absolute paths, protected
+  secrets, symlinks that leave the project and binaries are rejected before a
+  file is opened. There is **no shell execution** - no cmd, PowerShell, bash,
+  npm, npx or git.
+- **Patches are staged, never auto-applied.** The loop stops at the first
+  `HCR_PATCH_V1` and stages it under `HCODER_HOME` (default `~/.hcoder`).
+  `hcoder diff` previews, `hcoder apply` validates and writes atomically
+  (all-or-nothing with rollback on multi-file failure), `hcoder revert`
+  restores the pre-apply snapshot - replaced, deleted and created files alike.
+- **Bounded by construction.** 12 rounds, 10 tool requests per round, 256 KB
+  per file, 512 KB of tool results per round, 2 MB per task; failures end the
+  task with a code instead of looping (`AGENT_LOOP_LIMIT_REACHED`,
+  `RESULT_TOO_LARGE`).
+
+The dashboard page **Coding → HCoder** (`#/hcoder`) shows the active route,
+destination, limits and install commands. `hcoder status` prints the same
+information, including `dashboard: http://127.0.0.1:7876/#/hcoder`.
+
+Environment: `HCR_ORIGIN` (control-plane origin, default
+`http://127.0.0.1:7876`), `HCODER_HOME` (state directory for staged patches
+and history).
+
 ## Context Privacy
 
 What actually leaves your machine is decided locally, before anything is sent:
@@ -412,6 +478,19 @@ Browser Companion:
   destination remembered for a local project
 - `GET /api/browser-companion/download`, `GET /downloads/hcr-browser-companion.zip`
 
+HCoder (local coding agent):
+
+- `POST /api/hcoder/turn` - one provider-neutral agent turn
+  (`{ sessionId?, projectRoot, messages[] }` -> classified reply)
+- `GET /api/hcoder/status?projectRoot=...` - route, provider/model, destination,
+  capabilities, limits, package commands, dashboard URL
+- `POST /api/hcoder/route` - show or switch the active route
+  (`companion` | `ollama`; unknown routes fail with `AGENT_PROTOCOL_UNSUPPORTED`)
+- `GET /api/hcoder/destination?projectRoot=...` - last-used ChatGPT
+  Project/session for one local project (session continuity)
+- `GET /api/hcoder/download`, `GET /downloads/hcoder-latest.tgz` - local npm
+  distribution of the CLI
+
 ## External Dependencies
 
 Codex CLI and Ollama remain external dependencies and are **not automatically
@@ -434,11 +513,13 @@ credentials, no project context and no conversation history are stored. Set
 
 - `npm run dev` - build packages and run the API with hot reload (use the Vite
   dev server in `apps/web` for frontend work)
-- `npm run build` - build all packages, the web app, the API and the companion
-  extension
+- `npm run build` - build all packages, the web app, the API, the companion
+  extension and the HCoder CLI tarball
 - `npm run build:companion` - build only the browser extension zip
+- `npm run build:hcoder` - bundle and `npm pack` the HCoder CLI only
 - `npm start` - run the built application at `http://127.0.0.1:7876`
-- `npm run typecheck` - typecheck all workspaces (including the extension)
+- `npm run typecheck` - typecheck all workspaces (including the extension and
+  the HCoder CLI)
 - `npm test` - build everything, then run the node test suites in `tests/`
 
 Test suites cover patch schema validation, workspace path safety (traversal,
@@ -446,7 +527,9 @@ absolute paths, protected files, symlink escapes), apply/revert/rollback
 behaviour, companion pairing and token authorization, context exclusion
 secrets/lockfiles/binaries, the full Web Handoff lifecycle and ChatGPT
 destination targeting (discovery, deterministic selection, error codes - all
-with mocked browser responses).
+with mocked browser responses), plus HCoder: bounded read tools, the agent
+protocol, the agent loop budgets, the local patch store (stage/diff/apply/
+revert), the HCR turn API and the installed CLI end to end.
 
 ## License
 

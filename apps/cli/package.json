@@ -1,0 +1,20 @@
+{
+  "name": "@heisenberg/hcoder",
+  "version": "0.1.0",
+  "description": "HCoder - provider-neutral local coding agent + filesystem execution plane for HCR",
+  "type": "module",
+  "bin": {
+    "hcoder": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "node ../../scripts/build-hcoder.mjs",
+    "typecheck": "tsc --noEmit"
+  }
+}

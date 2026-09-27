@@ -163,6 +163,52 @@ export async function getOllamaContextInfo(model: string): Promise<OllamaContext
   return { loadedContextSize: loaded, declaredContextSize: declared, contextWindow: loaded ?? declared };
 }
 
+/** One chat message accepted by the OpenAI-compatible Ollama endpoint. */
+export interface OllamaChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * One non-streaming chat completion against the local Ollama runtime.
+ *
+ * Used by HCR's provider-neutral agent-turn engine when the active route is
+ * Ollama. Throws on network failure or non-2xx responses so the caller can
+ * report a clear capability/availability error instead of silently falling
+ * back to another provider.
+ */
+export async function ollamaChatComplete(
+  model: string,
+  messages: OllamaChatMessage[],
+  timeoutMs = 180_000
+): Promise<string> {
+  const endpoint = `${getOllamaBaseUrl()}/v1/chat/completions`;
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ model, messages, stream: false }),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'connection failed';
+    throw new Error(`Ollama is unreachable at ${getOllamaBaseUrl()} (${detail}).`);
+  }
+  if (!response.ok) {
+    const body = (await response.text().catch(() => '')).slice(0, 500);
+    throw new Error(`Ollama rejected the request (${response.status})${body ? `: ${body}` : ''}.`);
+  }
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== 'string') {
+    throw new Error('Ollama returned no message content.');
+  }
+  return content;
+}
+
 /**
  * Format bytes to human readable string.
  */

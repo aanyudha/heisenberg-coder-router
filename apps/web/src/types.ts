@@ -325,3 +325,58 @@ export interface DownloadInfo {
   available: boolean;
   bytes: number;
 }
+
+/** HCoder package metadata served by HCR (local npm distribution). */
+export interface HcoderPackageInfo {
+  name: string;
+  version: string;
+  filename: string;
+  available: boolean;
+  bytes: number;
+  url: string;
+  installCommand: string;
+  updateCommand: string;
+  uninstallCommand: string;
+}
+
+/** Conversation target used by the ChatGPT Web (companion) route. */
+export interface HcoderDestination {
+  chatgptProjectId: string | null;
+  chatgptProjectName: string | null;
+  chatgptProjectUrl: string | null;
+  chatId: string;
+  chatTitle: string;
+  chatUrl: string;
+  chatMode: ChatgptSendMode;
+}
+
+/** GET /api/hcoder/status response (dashboard view). */
+export interface HcoderStatus {
+  version: string;
+  route: 'companion' | 'ollama';
+  routeLabel: string;
+  provider: string;
+  model: string | null;
+  destination: HcoderDestination | null;
+  companion: CompanionStatus | null;
+  online: boolean;
+  capabilities: {
+    readFile: boolean;
+    listDirectory: boolean;
+    searchFiles: boolean;
+    searchText: boolean;
+    patchApply: boolean;
+    rollback: boolean;
+    shell: false;
+  };
+  limits: {
+    maxRounds: number;
+    maxToolRequestsPerRound: number;
+    maxBytesPerFile: number;
+    maxResultBytesPerRound: number;
+    maxTotalToolResultBytes: number;
+    maxSearchResults: number;
+  };
+  package: HcoderPackageInfo;
+  dashboardUrl: string;
+}

@@ -61,7 +61,7 @@ export const IGNORED_DIRECTORIES = new Set([
 ]);
 
 /** File extensions treated as binary - never read as text. */
-const BINARY_EXTENSIONS = new Set([
+export const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tiff',
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
   '.zip', '.gz', '.tar', '.rar', '.7z', '.bz2', '.xz',
@@ -366,7 +366,7 @@ export class ProjectContextEngine {
 // .gitignore support (pragmatic subset: comments, *, ?, **, dir/, !, /) //
 // -------------------------------------------------------------------- //
 
-interface GitignoreRules {
+export interface GitignoreRules {
   isIgnored(relativePath: string, isDirectory: boolean): boolean;
 }
 
@@ -429,7 +429,7 @@ function compileGitignorePattern(pattern: string): CompiledRule | null {
   return { negated, regex: new RegExp(`${prefix}${source}${suffix}`, 'i') };
 }
 
-async function readGitignore(root: string): Promise<GitignoreRules> {
+export async function readGitignore(root: string): Promise<GitignoreRules> {
   const gitignorePath = join(root, '.gitignore');
   const rules: CompiledRule[] = [];
   if (existsSync(gitignorePath)) {

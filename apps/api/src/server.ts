@@ -16,6 +16,7 @@ import { registerProjectRoutes } from './routes/project.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { registerBrowserCompanionRoutes } from './routes/browser-companion.js';
 import { registerWebHandoffRoutes } from './routes/web-handoff.js';
+import { registerHcoderRoutes } from './routes/hcoder.js';
 import { registerDownloadRoutes } from './routes/downloads.js';
 import { registerGateway } from './gateway.js';
 
@@ -31,6 +32,8 @@ export async function createServer(context: AppContext = createContext()): Promi
   });
 
   // Map AppError to its status code; everything else keeps its own statusCode or 500.
+  // Deterministic codes (e.g. HCoder's ROUTE_UNAVAILABLE) ride along so local
+  // clients never have to parse prose to decide what failed.
   app.setErrorHandler((error, _request, reply) => {
     const message = error instanceof Error ? error.message : 'Internal server error';
     const statusCode =
@@ -39,7 +42,10 @@ export async function createServer(context: AppContext = createContext()): Promi
         : typeof (error as { statusCode?: number } | null)?.statusCode === 'number'
           ? (error as { statusCode: number }).statusCode
           : 500;
-    reply.code(statusCode).send({ error: message });
+    const code = (error as { code?: unknown } | null)?.code;
+    reply
+      .code(statusCode)
+      .send(typeof code === 'string' && code.length > 0 ? { error: message, code } : { error: message });
   });
 
   // Serve the built React app when it exists (after `npm run build`).
@@ -73,6 +79,7 @@ export async function createServer(context: AppContext = createContext()): Promi
   // Web Handoff + Browser Companion (optional ChatGPT Web workflow).
   await registerBrowserCompanionRoutes(app, context);
   await registerWebHandoffRoutes(app, context);
+  await registerHcoderRoutes(app, context);
   await registerDownloadRoutes(app);
 
   // Data plane: transparent Ollama gateway (streaming, metadata-only

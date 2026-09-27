@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@heisenberg/contracts": ["packages/contracts/src/index.ts"],
+      "@heisenberg/shared": ["packages/shared/src/index.ts"],
+      "@heisenberg/providers": ["packages/providers/src/index.ts"],
+      "@heisenberg/core": ["packages/core/src/index.ts"]
+    },
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src"]
+}
