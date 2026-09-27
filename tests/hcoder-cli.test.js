@@ -1,10 +1,12 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { HcoderPatchStore } from '../packages/core/dist/index.js';
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Isolated HCR control plane + offline Ollama for this process.
 process.env.HCR_DATA_DIR = mkdtempSync(join(tmpdir(), 'hcr-hcoder-cli-db-'));
@@ -46,12 +48,13 @@ after(async () => {
   }
 });
 
-/** Runs the built CLI in a child process (stdin can be scripted). */
-function hcoder(args, { env = {}, input } = {}) {
+/** Runs the built packaged CLI entrypoint in a child process (stdin scripted). */
+function hcoder(args, { env = {}, input, cwd } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       env: { ...process.env, HCODER_HOME: HOME, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...(cwd ? { cwd } : {}),
     });
     let stdout = '';
     let stderr = '';
@@ -107,9 +110,106 @@ test('version, help and unknown options behave predictably', async () => {
   assert.equal(unknown.code, 2);
   assert.match(unknown.stderr, /USAGE: Unknown option/);
 
-  const noTask = await hcoder([]);
+  assert.match(help.stdout, /hcoder\s+Interactive session in the current project/);
+
+  // An EXPLICIT empty `run` still demands a task - only bare `hcoder` opens
+  // the REPL (that dispatch is covered by the interactive tests below).
+  const noTask = await hcoder(['run']);
   assert.equal(noTask.code, 2);
   assert.match(noTask.stderr, /A task is required/);
+});
+
+test('bare `hcoder` enters the interactive REPL (no "A task is required")', async () => {
+  // temporaryProject/ with app.ts + README.md, run with cwd = temporaryProject
+  const project = mkdtempSync(join(tmpdir(), 'hcr-hcoder-repl-'));
+  dirs.push(project);
+  writeFileSync(join(project, 'app.ts'), 'export const answer = 42;\n');
+  writeFileSync(join(project, 'README.md'), '# temporaryProject\n');
+  const realProject = realpathSync(project);
+
+  const result = await hcoder([], {
+    env: { HCR_ORIGIN: DEAD_ORIGIN },
+    cwd: project,
+    input: 'exit\n',
+  });
+
+  assert.equal(result.code, 0, `expected a clean exit, stderr: ${result.stderr}`);
+  const all = result.stdout + result.stderr;
+  assert.match(result.stdout, /HCoder 0\.1\.0/, 'header contains HCoder');
+  assert.match(result.stdout, new RegExp(escapeRegExp(realProject)), 'header contains the project path');
+  assert.match(result.stdout, /^> /m, 'the interactive prompt starts');
+  assert.doesNotMatch(all, /A task is required/);
+  assert.match(result.stdout, /Goodbye\./, '"exit" terminates cleanly');
+});
+
+test('interactive REPL commands and agent tasks run through the shared engine', async () => {
+  pairAndConnect();
+  const project = mkdtempSync(join(tmpdir(), 'hcr-hcoder-repl-cmd-'));
+  dirs.push(project);
+  writeFileSync(join(project, 'README.md'), '# repl\n');
+  const realProject = realpathSync(project);
+
+  // `help` and `project` are REPL commands; every other line runs the SAME
+  // agent engine as `hcoder "<task>"`. Two task prompts must stay in ONE
+  // logical HCoder session (same handoff/session id, same ChatGPT session).
+  const child = hcoder([], {
+    env: { HCR_ORIGIN: origin },
+    cwd: project,
+    input: 'help\nproject\ninspect this project\nnow compare with the README\nexit\n',
+  });
+
+  const reply = (message) =>
+    JSON.stringify({
+      version: 'HCODER_AGENT_V1',
+      status: 'answered',
+      requests: [],
+      message,
+    });
+  const sessionInfo = {
+    chatgptProjectId: 'proj-repl',
+    chatgptProjectName: 'REPL Project',
+    chatgptProjectUrl: 'https://chatgpt.com/g/project/proj-repl',
+    chatId: 'chat-repl',
+    chatTitle: 'REPL session',
+    chatUrl: 'https://chatgpt.com/c/chat-repl',
+    chatMode: 'create',
+  };
+
+  // First prompt -> agent turn 1.
+  const firstTask = await takeTask();
+  assert.equal(firstTask.kind, 'agent');
+  assert.match(firstTask.prompt, /HCODER_AGENT_V1/);
+  await context.companion.resolveTask(firstTask.id, {
+    status: 'OK',
+    responseText: reply('The project contains a single README file.'),
+    session: sessionInfo,
+  });
+
+  // Second prompt -> agent turn 2 in the SAME logical session.
+  const secondTask = await takeTask();
+  assert.equal(secondTask.kind, 'agent');
+  assert.ok(firstTask.handoffId, 'turn 1 carried the logical session id');
+  assert.equal(
+    secondTask.handoffId,
+    firstTask.handoffId,
+    'both prompts share one HCoder session (continuity)'
+  );
+  assert.equal(secondTask.destination?.chatId, 'chat-repl', 'the same chat is reused');
+  assert.equal(secondTask.destination?.chatMode, 'continue', 'never creates a second chat');
+  await context.companion.resolveTask(secondTask.id, {
+    status: 'OK',
+    responseText: reply('README.md only documents the project.'),
+  });
+
+  const result = await child;
+  assert.equal(result.code, 0, `expected a clean exit, stderr: ${result.stderr}`);
+  assert.match(result.stdout, /Commands:/, 'help printed the REPL command list');
+  assert.match(result.stdout, new RegExp(escapeRegExp(realProject)), 'project printed the root');
+  assert.match(result.stdout, /Thinking\.\.\./, 'task lines used the agent engine');
+  assert.match(result.stdout, /single README file/, 'the first agent answer was rendered');
+  assert.match(result.stdout, /only documents the project/, 'the second agent answer was rendered');
+  assert.doesNotMatch(result.stdout + result.stderr, /A task is required/);
+  assert.match(result.stdout, /Goodbye\./);
 });
 
 test('every command fails with a deterministic code when HCR is unreachable', async () => {

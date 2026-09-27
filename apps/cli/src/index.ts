@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 import type {
   ChatgptSessionRef,
@@ -44,6 +45,7 @@ const COMMANDS = new Set([
 const HELP = `HCoder ${HCODER_VERSION} - local coding agent for HCR
 
 Usage:
+  hcoder                          Interactive session in the current project
   hcoder <task...>                 Run the agent on a task (default command)
   hcoder run <task...>             Same as above
   hcoder status [--json]           Route, provider, destination, limits, package
@@ -55,6 +57,11 @@ Usage:
   hcoder route [companion|ollama]  Show or switch the HCR intelligence route
   hcoder download [--json]         Install / update / uninstall commands
   hcoder version                   Print the version
+
+Interactive session (no arguments):
+  hcoder opens a persistent REPL in the current directory. Inside it: help,
+  status, project, diff, apply, reject, revert, history, exit / quit - and
+  every other line runs as an agent task in ONE continuous HCoder session.
 
 Options:
   -p, --project <dir>   Project root (default: current directory)
@@ -81,6 +88,8 @@ class CliError extends Error {
 
 interface CliOptions {
   command: string;
+  /** True when a real subcommand token was seen (bare `hcoder` stays false). */
+  explicit: boolean;
   taskArgs: string[];
   origin?: string;
   project?: string;
@@ -93,6 +102,7 @@ interface CliOptions {
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     command: 'run',
+    explicit: false,
     taskArgs: [],
     json: false,
     quiet: false,
@@ -124,6 +134,7 @@ function parseArgs(argv: string[]): CliOptions {
       throw new CliError('USAGE', `Unknown option: ${token}`);
     } else if (!commandTaken && COMMANDS.has(token)) {
       options.command = token;
+      options.explicit = true;
       commandTaken = true;
     } else {
       options.taskArgs.push(token);
@@ -232,6 +243,127 @@ function printTurnLine(event: AgentLoopEvent): void {
   else if (event.type === 'patch') err(`✓ round ${event.round}: ${event.summary}`);
 }
 
+// ---- shared agent engine ----------------------------------------------- //
+// ONE implementation for `hcoder "<task>"` and for REPL tasks: the session
+// owns the logical HCoder session (id + conversation) and the outcome is
+// rendered identically in both modes.                                  //
+
+interface AgentSession {
+  readonly projectRoot: string;
+  readonly client: HcrClient;
+  /** One logical conversation, shared across every REPL prompt. */
+  readonly history: HcoderAgentMessage[];
+  sessionId: string | null;
+  lastTurn: HcoderTurnResponse | null;
+}
+
+interface AgentCommon {
+  rounds: number;
+  sessionId: string | null;
+  route: string | null;
+  provider: string | null;
+  model: string | null;
+}
+
+type AgentRunOutcome =
+  | { kind: 'error'; code: string; message: string; common: AgentCommon }
+  | { kind: 'text'; text: string; common: AgentCommon }
+  | {
+      kind: 'patch';
+      staged: { id: string; summary: string; files: { path: string; action: string }[] };
+      common: AgentCommon;
+    };
+
+function createAgentSession(projectRoot: string, client: HcrClient): AgentSession {
+  return { projectRoot, client, history: [], sessionId: null, lastTurn: null };
+}
+
+/** Runs exactly one agent task (bounded loop, staging only - never apply). */
+async function runAgentTask(
+  session: AgentSession,
+  task: string,
+  onEvent?: (event: AgentLoopEvent) => void
+): Promise<AgentRunOutcome> {
+  const transport: AgentLoopTransport = {
+    async submit(messages: HcoderAgentMessage[]): Promise<string> {
+      const request: HcoderTurnRequest = {
+        ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+        projectRoot: session.projectRoot,
+        messages,
+      };
+      const turn = await session.client.turn(request);
+      session.sessionId = turn.sessionId;
+      session.lastTurn = turn;
+      return turn.reply.raw;
+    },
+  };
+
+  const loop = new HcoderAgentLoop({
+    transport,
+    tools: new HcoderToolEngine(session.projectRoot),
+    onEvent,
+  });
+
+  const result: AgentLoopResult = await loop.run(task, session.history);
+  const turn = session.lastTurn;
+  const common: AgentCommon = {
+    rounds: result.rounds,
+    sessionId: session.sessionId,
+    route: turn?.route ?? null,
+    provider: turn?.provider ?? null,
+    model: turn?.model ?? null,
+  };
+
+  if (result.kind === 'error') {
+    return { kind: 'error', code: result.code, message: result.message, common };
+  }
+  if (result.kind === 'text') {
+    return { kind: 'text', text: result.text, common };
+  }
+
+  // Patch: stage it. NEVER applied here - the user reviews first.
+  const staged = new HcoderPatchStore().stage(session.projectRoot, result.patch, {
+    route: common.route,
+    provider: common.provider,
+    model: common.model,
+    destination: destinationLabel(turn?.destination ?? null),
+  });
+  return {
+    kind: 'patch',
+    staged: {
+      id: staged.id,
+      summary: staged.summary,
+      files: staged.patch.files.map((file) => ({ path: file.path, action: file.action })),
+    },
+    common,
+  };
+}
+
+/** Renders one task outcome identically for `hcoder "<task>"` and the REPL. */
+function renderOutcome(outcome: AgentRunOutcome, options: CliOptions): number {
+  const { common } = outcome;
+  if (outcome.kind === 'error') {
+    reportError(outcome.code, outcome.message, options.json);
+    return 1;
+  }
+  if (outcome.kind === 'text') {
+    if (options.json) jsonOut({ ok: true, kind: 'text', text: outcome.text, ...common });
+    else out(outcome.text);
+    return 0;
+  }
+  if (options.json) {
+    jsonOut({ ok: true, kind: 'patch', ...common, patch: outcome.staged });
+    return 0;
+  }
+  out(`Patch staged (nothing written to disk): ${outcome.staged.summary}`);
+  for (const file of outcome.staged.files) {
+    out(`  ${file.action.padEnd(7)} ${file.path}`);
+  }
+  out('');
+  out('Review: hcoder diff    Apply: hcoder apply    Reject: hcoder reject');
+  return 0;
+}
+
 // ---- commands ---------------------------------------------------------- //
 
 async function cmdStatus(options: CliOptions, client: HcrClient): Promise<number> {
@@ -302,82 +434,9 @@ async function cmdRun(options: CliOptions, client: HcrClient): Promise<number> {
     err(`HCoder ${HCODER_VERSION} · ${status.routeLabel} · ${provider} · ${projectRoot}`);
   }
 
-  const tools = new HcoderToolEngine(projectRoot);
-  const store = new HcoderPatchStore();
-  let sessionId: string | undefined;
-  let lastTurn: HcoderTurnResponse | null = null;
-
-  const transport: AgentLoopTransport = {
-    async submit(messages: HcoderAgentMessage[]): Promise<string> {
-      const request: HcoderTurnRequest = {
-        ...(sessionId ? { sessionId } : {}),
-        projectRoot,
-        messages,
-      };
-      const turn = await client.turn(request);
-      sessionId = turn.sessionId;
-      lastTurn = turn;
-      return turn.reply.raw;
-    },
-  };
-
-  const loop = new HcoderAgentLoop({
-    transport,
-    tools,
-    onEvent: options.json || options.quiet ? undefined : printTurnLine,
-  });
-
-  const result: AgentLoopResult = await loop.run(task);
-  // `lastTurn` is only assigned inside the transport closure; read it back
-  // through a widened view so TypeScript keeps the full union.
-  const turn = lastTurn as HcoderTurnResponse | null;
-  const meta = {
-    route: turn?.route ?? null,
-    provider: turn?.provider ?? null,
-    model: turn?.model ?? null,
-    destination: destinationLabel(turn?.destination ?? null),
-  };
-  const common = {
-    rounds: result.rounds,
-    sessionId: sessionId ?? null,
-    route: meta.route,
-    provider: meta.provider,
-    model: meta.model,
-  };
-
-  if (result.kind === 'error') {
-    reportError(result.code, result.message, options.json);
-    return 1;
-  }
-
-  if (result.kind === 'text') {
-    if (options.json) jsonOut({ ok: true, kind: 'text', text: result.text, ...common });
-    else out(result.text);
-    return 0;
-  }
-
-  // Patch: stage it. NEVER applied here - the user reviews first.
-  const staged = store.stage(projectRoot, result.patch, meta);
-  if (options.json) {
-    jsonOut({
-      ok: true,
-      kind: 'patch',
-      ...common,
-      patch: {
-        id: staged.id,
-        summary: staged.summary,
-        files: staged.patch.files.map((file) => ({ path: file.path, action: file.action })),
-      },
-    });
-    return 0;
-  }
-  out(`Patch staged (nothing written to disk): ${staged.summary}`);
-  for (const file of staged.patch.files) {
-    out(`  ${file.action.padEnd(7)} ${file.path}`);
-  }
-  out('');
-  out('Review: hcoder diff    Apply: hcoder apply    Reject: hcoder reject');
-  return 0;
+  const session = createAgentSession(projectRoot, client);
+  const outcome = await runAgentTask(session, task, options.json || options.quiet ? undefined : printTurnLine);
+  return renderOutcome(outcome, options);
 }
 
 async function cmdDiff(options: CliOptions): Promise<number> {
@@ -470,6 +529,139 @@ async function cmdHistory(options: CliOptions): Promise<number> {
   return 0;
 }
 
+// ---- interactive mode --------------------------------------------------- //
+
+const REPL_HELP = [
+  'Commands:',
+  '  help      this list',
+  '  status    HCR route, destination and limits',
+  '  project   the active project root',
+  '  diff      show the pending patch (nothing is written)',
+  '  apply     write the pending patch',
+  '  reject    discard the pending patch',
+  '  revert    restore the last applied patch',
+  '  history   patch history (metadata only)',
+  '  exit      quit (also: quit, Ctrl+C)',
+  '',
+  'Anything else runs as an HCoder agent task for this project.',
+].join('\n');
+
+/**
+ * `hcoder` with no arguments: a persistent REPL in the current directory.
+ *
+ * One logical HCoder session lives for the whole process - the same
+ * sessionId / conversation is reused for every prompt (ChatGPT Project +
+ * chat session on the companion route, same local conversation on Ollama),
+ * and tasks run through the exact same engine as `hcoder "<task>"`.
+ */
+async function cmdInteractive(options: CliOptions, client: HcrClient): Promise<number> {
+  const projectRoot = requireProject(options.project);
+  const runOptions: CliOptions = { ...options, project: projectRoot, json: false };
+  const session = createAgentSession(projectRoot, client);
+
+  out(`HCoder ${HCODER_VERSION}`);
+  out('');
+  out(`Project   ${projectRoot}`);
+  try {
+    const status = await client.status(projectRoot);
+    out('HCR       Connected');
+    out(`Route     ${status.routeLabel}`);
+    out(`Target    ${describeDestination(status)}`);
+  } catch (error) {
+    const { code } = errorDetails(error);
+    out(`HCR       Offline · ${code}`);
+    out('Route     -');
+    out('Target    -');
+  }
+  out('');
+  out('Type "help" for commands, "exit" or Ctrl+C to quit.');
+  out('');
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+  let closed = false;
+  const closeRl = (): void => {
+    closed = true;
+    rl.close();
+  };
+  const safePrompt = (): void => {
+    if (closed) return;
+    try {
+      rl.prompt();
+    } catch {
+      closed = true; // readline closed between the check and the prompt
+    }
+  };
+  rl.on('close', () => {
+    closed = true;
+  });
+  rl.on('SIGINT', closeRl); // Ctrl+C ends the session cleanly - never a hard kill.
+
+  const handleLine = async (line: string): Promise<void> => {
+    switch (line) {
+      case 'help':
+        out(REPL_HELP);
+        return;
+      case 'project':
+        out(projectRoot);
+        return;
+      case 'status':
+        await cmdStatus(runOptions, client);
+        return;
+      case 'diff':
+        await cmdDiff(runOptions);
+        return;
+      case 'apply':
+        await cmdApply(runOptions);
+        return;
+      case 'reject':
+        await cmdReject(runOptions);
+        return;
+      case 'revert':
+        await cmdRevert(runOptions);
+        return;
+      case 'history':
+        await cmdHistory(runOptions);
+        return;
+      default:
+        break; // not a command -> an agent task
+    }
+
+    out('Thinking...');
+    const outcome = await runAgentTask(session, line, printTurnLine);
+    renderOutcome(outcome, runOptions);
+  };
+
+  rl.prompt();
+  try {
+    // Readline keeps delivering already-buffered lines after stdin EOF, so
+    // `exit` at the end of a piped script still runs before the loop ends.
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        safePrompt();
+        continue;
+      }
+      const lower = trimmed.toLowerCase();
+      if (lower === 'exit' || lower === 'quit') break;
+
+      try {
+        await handleLine(trimmed);
+      } catch (error) {
+        const { code, message } = errorDetails(error);
+        reportError(code, message, false);
+      }
+
+      safePrompt();
+    }
+  } finally {
+    if (!closed) rl.close();
+    process.stdin.pause(); // release stdin so the process can exit
+  }
+
+  out('Goodbye.');
+  return 0;
+}
+
 // ---- entry ------------------------------------------------------------- //
 
 async function main(argv: string[]): Promise<number> {
@@ -490,6 +682,10 @@ async function main(argv: string[]): Promise<number> {
     case 'download':
       return await cmdDownload(options, client);
     case 'run':
+      // Bare `hcoder` (no command, no task, no --stdin-json) opens the REPL.
+      if (!options.explicit && options.taskArgs.length === 0 && !options.stdinJson) {
+        return await cmdInteractive(options, client);
+      }
       return await cmdRun(options, client);
     case 'diff':
       return await cmdDiff(options);

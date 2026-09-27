@@ -47,8 +47,19 @@ export class HcoderAgentLoop {
     this.onEvent = options.onEvent;
   }
 
-  async run(task: string): Promise<AgentLoopResult> {
-    const messages: HcoderAgentMessage[] = [{ role: 'user', content: task }];
+  /**
+   * Runs one bounded task.
+   *
+   * `history` is optional and lets a caller (the interactive REPL) own one
+   * logical conversation across many tasks: the array is mutated in place -
+   * the task, every assistant reply and every tool result are appended, and
+   * the next call continues the same transcript (session continuity for the
+   * Ollama route, original task + latest message for the companion route).
+   * One-shot runs simply omit it and start a fresh conversation.
+   */
+  async run(task: string, history?: HcoderAgentMessage[]): Promise<AgentLoopResult> {
+    const messages: HcoderAgentMessage[] = history ?? [];
+    messages.push({ role: 'user', content: task });
     let rounds = 0;
 
     for (let round = 1; round <= this.limits.maxRounds; round++) {

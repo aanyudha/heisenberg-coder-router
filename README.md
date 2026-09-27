@@ -307,6 +307,7 @@ The tarball is produced by `npm run build` (or `npm run build:hcoder`) and
 served by the HCR server on the fixed origin `http://127.0.0.1:7876`.
 
 ```bash
+hcoder                                         # interactive session (REPL) below
 hcoder "add input validation to the parser"   # agent task -> staged patch
 hcoder diff                                   # review (nothing written yet)
 hcoder apply                                  # explicit write
@@ -317,6 +318,15 @@ hcoder route ollama                           # switch route (persisted in HCR)
 hcoder status --json                          # route, destination, limits, package
 hcoder history                                # metadata-only patch history
 ```
+
+Running `hcoder` with no arguments opens a persistent interactive session in
+the current project: it prints the project, HCR connection and route, then a
+`> ` prompt. `help`, `status`, `project`, `diff`, `apply`, `reject`,
+`revert`, `history` and `exit`/`quit` (or Ctrl+C) are session commands, and
+every other line runs as an agent task through the exact same engine as
+`hcoder "<task>"` - one continuous HCoder session (same ChatGPT Project/session
+on the companion route, same local conversation on Ollama) for the whole
+process.
 
 How it works:
 
